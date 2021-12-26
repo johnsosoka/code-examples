@@ -1,4 +1,4 @@
-F2::
+F1::
 {
     sleep_duration(2000, 5000)
     Msgbox "finished sleeping"

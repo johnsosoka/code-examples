@@ -1,7 +1,7 @@
 global executeHour = 8
 
 global OneMinuteMilliseconds := 60000
-F2::
+F1::
     loop {
 
         if (shouldExecuteBasedOnTime())

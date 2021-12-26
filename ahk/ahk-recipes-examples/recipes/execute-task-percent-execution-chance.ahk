@@ -1,6 +1,6 @@
 global percentChanceOfExecution := 50
 
-F2::
+F1::
 {
     if (shouldExecuteBasedOnChance()) {
         Msgbox, % Format("I executed with {}% of execution", percentChanceOfExecution)
