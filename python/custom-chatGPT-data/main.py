@@ -10,6 +10,8 @@ openai.api_key = '<YOUR_API_KEY>'
 ###############################################
 # Read the text file and split it into chunks
 ###############################################
+
+
 def split_file_content(file_path, chunk_size):
     # Check if the file exists
     if not os.path.isfile(file_path):
@@ -47,8 +49,9 @@ for split_text in split_text_content:
     vectors_array.append(vectors)
 
 ###############################################
-# Build FAISS Database for Similarity Search
+# Build FAISS Index for Similarity Search
 ###############################################
+
 
 dimensionality = len(vectors_array[0]) # dimensionality based on size of vector array.
 
@@ -65,16 +68,18 @@ vector_index.add(vectors__numpy_array)
 # Ask for User Input / Convert User Input to Vector
 ###############################################
 
+
 user_query = input("What is your question? ")
 
 user_query_vector_representation = fetch_embeddings(user_query)
 query_numpy_array = np.array(user_query_vector_representation, dtype=np.float32)
+
 ###############################################
 # Perform Similarity Search
 ###############################################
 
-k = 2 # Number of Nearest neighbors to retrieve
 
+k = 2 # Number of Nearest neighbors to retrieve
 distances, indices = vector_index.search(query_numpy_array.reshape(1, -1), k)
 
 fetched_context = []
@@ -91,6 +96,7 @@ for i in range(k):
 ###############################################
 # Prepare Template & Send Data to AI for Answers.
 ###############################################
+
 
 Template = """
 context: {context}
