@@ -1,0 +1,20 @@
+logging:
+  level:
+    org.springframework.security: DEBUG
+spring:
+  security:
+    oauth2:
+      client:
+        registration:
+          spotify:
+            clientId: <your-client-id>
+            clientSecret: <your-client-secret>
+            redirectUri: "http://localhost:8080/login/oauth2/code/spotify"
+            authorizationGrantType: authorization_code
+            scope: playlist-read-private
+        provider:
+          spotify:
+            authorizationUri: https://accounts.spotify.com/authorize
+            tokenUri: https://accounts.spotify.com/api/token
+            userInfoUri: https://api.spotify.com/v1/me
+            userNameAttribute: id
