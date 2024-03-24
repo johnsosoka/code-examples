@@ -33,11 +33,18 @@ public class BookingAgent {
      */
     @PostConstruct
     public void defineAgentProfile() {
-        String agentProfile = "You are a booking agent for an online hotel. You are here to help customers book rooms and check availability.";
+        String agentProfile = "You are a booking agent for an online hotel. You are here to help customers book rooms and check availability." +
+                "Use the tools you have access to in order to help customers with their requests. You can check availability, book rooms, and find bookings.";
         SystemMessage systemMessage = new SystemMessage(agentProfile);
         conversationService.addMessage(systemMessage);
     }
 
+
+    /**
+     * When a message is sent to the agent, the agent will handle the message and return a response.
+     * @param message
+     * @return
+     */
     public String handleMessage(String message) {
         // Add the user message to the conversation
         UserMessage latestMessage = new UserMessage(message);
@@ -57,25 +64,26 @@ public class BookingAgent {
 
     /**
      * Expose function callbacks to the OpenAI chat client
+     *
      * @return
      */
     private OpenAiChatOptions getPromptOptions() {
         return OpenAiChatOptions.builder()
                 .withFunctionCallbacks(List.of(FunctionCallbackWrapper.builder(checkAvailabilityTool)
-                        .withName("CheckAvailability")
-                        .withDescription("Check the availability of rooms for a specific date")
-                        .withResponseConverter((response) -> "" + response.available())
-                        .build()))
-                .withFunctionCallbacks(List.of(FunctionCallbackWrapper.builder(bookRoomTool)
-                        .withName("BookRoom")
-                        .withDescription("Helpful for booking a room for a guest for a specific check-in and check-out date")
-                        .withResponseConverter((response) -> response.bookingStatus())
-                        .build()))
-//                .withFunctionCallbacks(List.of(FunctionCallbackWrapper.builder(findBookingTool)
-//                        .withName("FindBooking")
-//                        .withDescription("Helpful to determine if a guest has booked a room")
-//                        .withResponseConverter((response) -> response.booking())
-//                        .build()))
+                                .withName("CheckAvailability")
+                                .withDescription("Helpeful for checking the availability of rooms for a specific date, this should be used before booking a room for a new guest.")
+                                .withResponseConverter((response) -> "" + response.available())
+                                .build(),
+                        FunctionCallbackWrapper.builder(bookRoomTool)
+                                .withName("BookRoom")
+                                .withDescription("Helpful for booking a room for a new guest for a specific check-in and check-out date")
+                                .withResponseConverter((response) -> response.bookingStatus())
+                                .build(),
+                        FunctionCallbackWrapper.builder(findBookingTool)
+                                .withName("FindBooking")
+                                .withDescription("Helpful to determine if an existing guest has booked a room")
+                                .withResponseConverter((response) -> response.booking())
+                                .build()))
                 .build();
     }
 }

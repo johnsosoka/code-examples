@@ -30,7 +30,7 @@ public class ConversationService {
     public synchronized List<Message> addMessage(Message message) {
         messageList.add(message);
         log.info("Added message to conversation: {}, total messages: {}", message, messageList.size());
-        return new ArrayList<>(messageList);
+        return messageList;
     }
 
     /**
@@ -40,6 +40,6 @@ public class ConversationService {
      */
     public synchronized List<Message> getAllMessages() {
         log.info("Retrieved all {} messages", messageList.size());
-        return new ArrayList<>(messageList);
+        return messageList;
     }
 }

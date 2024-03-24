@@ -1,0 +1,40 @@
+{
+	"info": {
+		"_postman_id": "85ed6357-c0e0-4b25-a4ce-6e786d19fd1e",
+		"name": "Spring AI Booking",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "18046817"
+	},
+	"item": [
+		{
+			"name": "Chat",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "text/plain",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "Hi, my name is John--Can you see if any rooms are available on February 28, 2025?"
+				},
+				"url": {
+					"raw": "http://localhost:8080/ai/booking",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "8080",
+					"path": [
+						"ai",
+						"booking"
+					]
+				}
+			},
+			"response": []
+		}
+	]
+}
