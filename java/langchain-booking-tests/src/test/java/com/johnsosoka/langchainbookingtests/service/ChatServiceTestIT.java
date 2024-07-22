@@ -30,7 +30,7 @@ class ChatServiceTestIT {
 
     private MultiPassEvaluator multiPassEvaluator;
 
-    private AgenticQA agenticQA;
+    private MultiPhaseEvaluator multiPhaseEvaluator;
 
 
     @BeforeEach
@@ -40,7 +40,7 @@ class ChatServiceTestIT {
                 .testEvaluationAgent(testEvaluationAgent)
                 .passCount(3)
                 .build();
-        agenticQA = new AgenticQA(provisionQATesterAgent());
+        multiPhaseEvaluator = new MultiPhaseEvaluator(provisionQATesterAgent());
     }
 
     @Test
@@ -57,7 +57,7 @@ class ChatServiceTestIT {
                 - All other dates should be considered unavailable
                 """;
 
-        TestPlanResult testPlanResult = agenticQA.generateAndExecuteTestPlan(systemDescription);
+        TestPlanResult testPlanResult = multiPhaseEvaluator.generateAndExecuteTestPlan(systemDescription);
         log.info("Test Plan: \n{}", testPlanResult.getTestPlan());
         log.info("Test Plan Results: \n{}", testPlanResult.getTestPlanResults());
         assertTrue(testPlanResult.getAllTestsPassed());
@@ -91,8 +91,8 @@ class ChatServiceTestIT {
                 .build();
     }
 
-    private QATesterAgent provisionQATesterAgent() {
-        return AiServices.builder(QATesterAgent.class)
+    private TestAgent provisionQATesterAgent() {
+        return AiServices.builder(TestAgent.class)
                 .chatLanguageModel(chatLanguageModel)
                 .chatMemory(MessageWindowChatMemory.withMaxMessages(50))
                 .tools(bookingAgentTool)
