@@ -30,8 +30,6 @@ class ChatServiceTestIT {
 
     private MultiPassEvaluator multiPassEvaluator;
 
-    private QATesterAgent qaTesterAgent;
-
     private AgenticQA agenticQA;
 
 
