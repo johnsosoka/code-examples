@@ -4,7 +4,7 @@ import dev.langchain4j.service.SystemMessage;
 import dev.langchain4j.service.UserMessage;
 import dev.langchain4j.service.V;
 
-public interface QATesterAgent {
+public interface TestAgent {
 
     @SystemMessage({
             "You are a world class QA engineer, your job is to test the system and ensure that it is working as expected.",

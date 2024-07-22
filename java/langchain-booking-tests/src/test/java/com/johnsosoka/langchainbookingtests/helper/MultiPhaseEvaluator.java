@@ -6,9 +6,9 @@ import lombok.extern.slf4j.Slf4j;
 
 @RequiredArgsConstructor
 @Slf4j
-public class AgenticQA {
+public class MultiPhaseEvaluator {
 
-    private final QATesterAgent qaTesterAgent;
+    private final TestAgent testAgent;
 
     /**
      * Generate and execute a test plan for a given System Description.
@@ -18,9 +18,9 @@ public class AgenticQA {
      * @return
      */
     public TestPlanResult generateAndExecuteTestPlan(String systemDescription) {
-        String testCases = qaTesterAgent.writeTestCases(systemDescription);
-        String testPlanResults = qaTesterAgent.test(testCases);
-        Boolean testPlanResult = qaTesterAgent.evaluateResults(testPlanResults);
+        String testCases = testAgent.writeTestCases(systemDescription);
+        String testPlanResults = testAgent.test(testCases);
+        Boolean testPlanResult = testAgent.evaluateResults(testPlanResults);
         return TestPlanResult.builder()
                 .testPlan(testCases)
                 .testPlanResults(testPlanResults)
