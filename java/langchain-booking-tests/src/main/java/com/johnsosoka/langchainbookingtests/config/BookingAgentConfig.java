@@ -5,6 +5,7 @@ import com.johnsosoka.langchainbookingtests.tool.BookingTools;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.model.openai.OpenAiChatModelName;
 import dev.langchain4j.service.AiServices;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -19,6 +20,7 @@ public class BookingAgentConfig {
     @Bean
     public ChatLanguageModel chatLanguageModel() {
         return OpenAiChatModel.builder()
+                .modelName(OpenAiChatModelName.GPT_4_O)
                 .apiKey(apiKey)
                 .build();
     }

@@ -21,14 +21,4 @@ public interface TestEvaluationAgent {
     })
     public Boolean evaluate(@V("condition") String condition, @V("result") String result);
 
-    @SystemMessage({
-            "You are a world class QA engineer, your job is to test the system and ensure that it is working as expected.",
-            "You will be provided with an explanation of the System's behavior and you must carefully write test cases to",
-            "ensure that the system meets the expected behavior."
-    })
-    @UserMessage({
-            "Write test cases for the following system behavior:\n",
-            "System Behavior: {{systemBehavior}}\n"
-    })
-    public List<TestCase> writeTestCases(@V("systemBehavior") String systemBehavior);
 }
