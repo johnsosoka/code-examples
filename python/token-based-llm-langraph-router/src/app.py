@@ -1,47 +1,41 @@
+import logging
 from workflow.graph import graph
 from workflow.state import State
 
-import logging
-
+# Set up logging
 logging.basicConfig(
-    level=logging.INFO,  # Set the desired logging level
+    level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler()]  # Explicitly add a stream handler for console output
+    handlers=[logging.StreamHandler()]
 )
-
-# Silence httpx
+# Silence httpx logging
 logging.getLogger("httpx").setLevel(logging.ERROR)
 
 
-
-#
-# ADVANCED ROUTING REQUEST
-#
-logging.info("The first query should route to the advanced model.")
-
-advanced_message = (
-    "Please ensure that product ID 18235 has inventory and doesn't have any "
-    "availability overrides set. If there are no overrides set, and inventory is zero, "
-    "please order a new batch."
-)
-
-advanced_state: State = {
-    "user_query": advanced_message
-}
-
-graph.invoke(advanced_state)
+def handle_query(user_query: str, description: str):
+    """
+    Handles routing of a query to the graph with the given state.
+    """
+    logging.info(description)
+    state: State = {"user_query": user_query}
+    graph.invoke(state)
 
 
+if __name__ == "__main__":
+    # Advanced routing request
+    advanced_message = (
+        "Please ensure that product ID 18235 has inventory and doesn't have any "
+        "availability overrides set. If there are no overrides set, and inventory is zero, "
+        "please order a new batch."
+    )
+    handle_query(
+        advanced_message,
+        "The first query should route to the advanced model."
+    )
 
-#
-# SIMPLE ROUTING REQUEST
-#
-
-
-logging.info("The second query should route to the simple model.")
-simple_message = "does product ID 1234 come in red?"
-simple_state: State = {
-    "user_query": simple_message
-}
-
-graph.invoke(simple_state)
+    # Simple routing request
+    simple_message = "Does product ID 1234 come in red?"
+    handle_query(
+        simple_message,
+        "The second query should route to the simple model."
+    )

@@ -37,6 +37,16 @@ To run the application:
     - One routed to the **advanced model**
     - Another routed to the **simple model**
 
+## Visualizing the Graph
+
+Included in the `src` dir is a utility script `generate_diagram.py` which can be executed to generate a png visualizing 
+the graph within this application. This script was used to generate the visualization above.
+
+```bash
+python generate_diagram.py
+```
+
 ## Notes
 
 - This repository is intended for educational purposes and quick prototyping.
+- See class level docstrings within `./core/language_models.py` for limitations with the current language model manager.
