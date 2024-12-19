@@ -3,7 +3,7 @@ from typing import TypedDict, Annotated
 
 
 class State(TypedDict):
-    """TypedDict for the entire state structure."""
+    """Represents the State for the graph. This is passed between the nodes & router"""
     # The sequence of messages exchanged in the conversation
     user_query: str
     # Annotated is required when branching

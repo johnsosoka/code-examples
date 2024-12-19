@@ -14,12 +14,12 @@ workflow.add_node("review", end)
 # Set the entry point
 # (This entrypoint is ALSO a conditional edge)
 workflow.add_conditional_edges(START,
-    query_router,
-    {
-                "advanced": "handle_advanced",
-                "simple": "handle_simple"
-              }
-)
+                               query_router,
+                               {
+                                   "advanced": "handle_advanced",
+                                   "simple": "handle_simple"
+                               }
+                               )
 
 # Join the branches to the review node & END
 workflow.add_edge("handle_advanced", "review")

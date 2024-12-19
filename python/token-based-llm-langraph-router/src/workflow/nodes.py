@@ -1,13 +1,9 @@
-
-
 from core.language_models import LanguageModels
 from workflow.state import State
 from langchain_core.prompts import PromptTemplate
 import logging
-from typing import Literal
 
 language_models = LanguageModels()
-NodeType = Literal["advanced", "simple"]
 
 
 def handle_advanced(state: State):
