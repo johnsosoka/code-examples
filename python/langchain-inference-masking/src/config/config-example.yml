@@ -1,0 +1,5 @@
+api_keys:
+  openai: "your-openai-api-key"
+
+model:
+  name: "gpt-4o-mini"
