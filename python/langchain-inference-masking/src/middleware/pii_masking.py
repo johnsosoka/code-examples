@@ -14,6 +14,8 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage
 
+from services.pii_registry import PiiRegistry
+
 logger = logging.getLogger(__name__)
 
 # PII detection patterns (basic set: email, phone, SSN)
@@ -56,7 +58,7 @@ class PiiMaskingMiddleware(AgentMiddleware):
 
     def __init__(self) -> None:
         super().__init__()
-        self._mask_registry: dict[str, str] = {}  # placeholder -> original value
+        self._registry = PiiRegistry.get_instance()
 
     def _mask_pii_in_text(self, text: str) -> str:
         """Detect and replace PII in text with placeholders."""
@@ -68,7 +70,7 @@ class PiiMaskingMiddleware(AgentMiddleware):
                 placeholder = _generate_placeholder(original_value, pii_type)
 
                 # Store mapping for later restoration
-                self._mask_registry[placeholder] = original_value
+                self._registry.register(placeholder, original_value)
 
                 masked_text = masked_text.replace(original_value, placeholder)
                 logger.debug(f"Masked {pii_type}: {original_value} -> {placeholder}")
@@ -79,7 +81,7 @@ class PiiMaskingMiddleware(AgentMiddleware):
         """Restore original PII values from placeholders."""
         unmasked_text = text
 
-        for placeholder, original_value in self._mask_registry.items():
+        for placeholder, original_value in self._registry.registry.items():
             if placeholder in unmasked_text:
                 unmasked_text = unmasked_text.replace(placeholder, original_value)
                 logger.debug(f"Unmasked: {placeholder} -> {original_value}")
@@ -145,7 +147,7 @@ class PiiMaskingMiddleware(AgentMiddleware):
         for msg in request.messages:
             masked_messages.append(self._mask_message(msg))  # type: ignore
 
-        pii_count = len(self._mask_registry)
+        pii_count = len(self._registry.registry)
         if pii_count > 0:
             logger.info(f"Masked {pii_count} PII value(s) before model call")
 
@@ -180,7 +182,12 @@ class PiiMaskingMiddleware(AgentMiddleware):
 
         return response
 
+    @property
+    def _mask_registry(self) -> dict[str, str]:
+        """Backwards compatibility property for accessing the registry."""
+        return self._registry.registry
+
     def clear_registry(self) -> None:
         """Clear the PII mask registry. Call between conversations if needed."""
-        self._mask_registry.clear()
+        self._registry.clear()
         logger.debug("Cleared PII mask registry")
