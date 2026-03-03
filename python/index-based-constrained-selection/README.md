@@ -24,7 +24,7 @@ This repository demonstrates a general safety pattern for Large Language Models:
 
 ## Examples
 
-This repository contains 4 comparative examples showing the **WRONG way** (free-form generation) vs. the **RIGHT way** (index-based selection):
+This repository contains 5 examples showing the **WRONG way** (free-form generation) vs. the **RIGHT way** (index-based selection), plus a LangGraph integration:
 
 ### 1. Deterministic Quoting ([`src/01_deterministic_quoting/`](src/01_deterministic_quoting/))
 
@@ -82,12 +82,26 @@ python -m src.04_config_selection.demo
 
 ---
 
+### 5. LangGraph Integration ([`src/05_langgraph_integration/`](src/05_langgraph_integration/))
+
+**Problem:** How do you integrate index-based selection into an agentic workflow?
+
+**Solution:** A LangGraph 1.0+ workflow with three nodes: chunk (sentence splitting), select (LLM picks indices), and retrieve (deterministic lookup).
+
+```bash
+python -m src.05_langgraph_integration.workflow
+```
+
+**Key Insight:** *The pattern composes naturally into graph-based pipelines — each node has a single responsibility.*
+
+---
+
 ## Installation
 
 ```bash
 # Clone the repository
 git clone https://github.com/johnsosoka/code-examples.git
-cd code-examples/index-based-constrained-selection
+cd code-examples/python/index-based-constrained-selection
 
 # Install dependencies with Poetry
 poetry install
@@ -130,11 +144,13 @@ index-based-constrained-selection/
 │   │   ├── right_way.py        # Template selection
 │   │   ├── schema.py           # DB schema & templates
 │   │   └── demo.py
-│   └── 04_config_selection/
-│       ├── wrong_way.py        # Free-form config generation
-│       ├── right_way.py        # Config template selection
-│       ├── config_models.py    # Pydantic config models
-│       └── demo.py
+│   ├── 04_config_selection/
+│   │   ├── wrong_way.py        # Free-form config generation
+│   │   ├── right_way.py        # Config template selection
+│   │   ├── config_models.py    # Pydantic config models
+│   │   └── demo.py
+│   └── 05_langgraph_integration/
+│       └── workflow.py          # LangGraph workflow integration
 └── tests/                      # Test suite
 ```
 
@@ -224,6 +240,6 @@ MIT License - See [LICENSE](LICENSE) for details.
 
 ---
 
-*Built with 🔬 by [Krieger](https://github.com/johnsosoka/code-examples) for educational purposes.*
+*Built by [John Sosoka](https://johnsosoka.com) for educational purposes.*
 
 *Remember: "The safest code is the code that never runs—or the code that can't possibly be wrong."*

@@ -11,7 +11,6 @@ generate quotes directly from source text. The LLM may:
 This approach sacrifices verifiability and accuracy for convenience.
 """
 
-from typing import List
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -23,7 +22,7 @@ class FreeFormQuotes(BaseModel):
     WARNING: This approach allows the LLM to generate or modify text,
     which may result in inaccurate or hallucinated quotes.
     """
-    quotes: List[str] = Field(
+    quotes: list[str] = Field(
         description="Relevant quotes extracted from the essay about the topic"
     )
     reasoning: str = Field(
@@ -53,10 +52,10 @@ def extract_quotes_wrong_way(
         FreeFormQuotes object containing the generated quotes and reasoning.
         
     Example:
-        >>> with open("essay.txt") as f:
+        >>> with open("essay.txt") as f:  # doctest: +SKIP
         ...     essay = f.read()
-        >>> result = extract_quotes_wrong_way(essay, "artificial intelligence")
-        >>> print(result.quotes)
+        >>> result = extract_quotes_wrong_way(essay, "artificial intelligence")  # doctest: +SKIP
+        >>> print(result.quotes)  # doctest: +SKIP
         ['AI is transforming healthcare...']  # May not match original exactly!
     """
     # Initialize the LLM
@@ -96,7 +95,7 @@ Return the quotes exactly as they appear in the text.""")
 
 def verify_quotes_accuracy(
     original_text: str,
-    quotes: List[str]
+    quotes: list[str]
 ) -> dict:
     """Verify how accurate the generated quotes are compared to the original.
     
@@ -133,7 +132,7 @@ def verify_quotes_accuracy(
                 "quote": quote[:100] + "..." if len(quote) > 100 else quote,
                 "status": "exact_match"
             })
-        elif any(clean_quote[:50] in original_text for _ in [0] if len(clean_quote) >= 50):
+        elif len(clean_quote) >= 50 and clean_quote[:50] in original_text:
             # Check if first 50 chars match (partial match heuristic)
             results["partial_matches"] += 1
             results["details"].append({

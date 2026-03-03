@@ -1,12 +1,11 @@
 """Shared Pydantic models for structured outputs."""
 
-from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
 class SelectionResult(BaseModel):
     """Result when LLM selects from indexed options."""
-    selected_indices: List[int] = Field(
+    selected_indices: list[int] = Field(
         description="The indices selected from the provided options"
     )
     reasoning: str = Field(
@@ -16,7 +15,7 @@ class SelectionResult(BaseModel):
 
 class QuoteSelection(BaseModel):
     """Structured output for quote selection."""
-    selected_indices: List[int] = Field(
+    selected_indices: list[int] = Field(
         description="Indices of sentences that should be quoted"
     )
     explanation: str = Field(

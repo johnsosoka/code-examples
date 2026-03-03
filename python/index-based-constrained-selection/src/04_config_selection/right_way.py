@@ -14,22 +14,11 @@ Benefits:
 This is like giving someone a menu instead of asking them to cook.
 """
 
-import sys
 from typing import Any
-from pathlib import Path
 
-# Handle imports for both module and script usage
-try:
-    from common.registry import IndexedRegistry
-    from common.models import ConfigSelection
-    from .config_models import LLMConfig, CONFIG_TEMPLATES, get_template_descriptions
-except ImportError:
-    # Running as script
-    parent_dir = Path(__file__).parent.parent
-    sys.path.insert(0, str(parent_dir))
-    from common.registry import IndexedRegistry
-    from common.models import ConfigSelection
-    from config_models import LLMConfig, CONFIG_TEMPLATES, get_template_descriptions
+from ..common.registry import IndexedRegistry
+from ..common.models import ConfigSelection
+from .config_models import LLMConfig, CONFIG_TEMPLATES, get_template_descriptions
 
 
 class RightWayConfigSelector:
@@ -155,7 +144,8 @@ class RightWayConfigSelector:
         
         # Validate index is in range
         if selection.config_index not in self.registry:
-            error_msg = f"Invalid index {selection.config_index}. Valid: {list(self.registry._items.keys())}"
+            valid_indices = [idx for idx, _ in self.registry.items()]
+            error_msg = f"Invalid index {selection.config_index}. Valid: {valid_indices}"
             print(f"\n❌ Error: {error_msg}")
             return {
                 "use_case": use_case,
@@ -229,14 +219,14 @@ class RightWayConfigSelector:
     def get_config_by_index(self, index: int) -> LLMConfig | None:
         """
         Directly retrieve a config by index (for programmatic use).
-        
+
         Args:
             index: Template index
-            
+
         Returns:
             LLMConfig or None if index invalid
         """
+        if index not in self.registry:
+            return None
         template = self.registry.get(index)
-        if template:
-            return template["config"]
-        return None
+        return template["config"]

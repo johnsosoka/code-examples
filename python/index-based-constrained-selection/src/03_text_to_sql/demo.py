@@ -13,13 +13,8 @@ Usage:
     python -m src.text_to_sql.demo
 """
 
-import sys
-from typing import List, Tuple
+from typing import List
 from dataclasses import dataclass
-from pathlib import Path
-
-# Add parent to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from .wrong_way import FreeFormSQLGenerator, SQLGenerationResult
 from .right_way import TemplateSQLGenerator, TemplateSelectionResult
@@ -168,13 +163,17 @@ class TextToSQLComparison:
         total = len(results)
         free_form_risks = sum(1 for r in results if r.free_form_result.risks)
         free_form_invalid = sum(1 for r in results if not r.free_form_result.is_valid)
+        free_form_safe = sum(
+            1 for r in results
+            if not r.free_form_result.risks and r.free_form_result.is_valid
+        )
         template_wins = sum(1 for r in results if r.winner == "TEMPLATE")
-        
+
         print(f"\nTotal test cases: {total}")
         print(f"\nFree-Form Generation:")
         print(f"  • Cases with security risks: {free_form_risks}/{total} ({100*free_form_risks//total}%)")
         print(f"  • Cases with syntax errors: {free_form_invalid}/{total} ({100*free_form_invalid//total}%)")
-        print(f"  • Safe cases: {total - free_form_risks - free_form_invalid}/{total}")
+        print(f"  • Safe cases: {free_form_safe}/{total}")
         
         print(f"\nTemplate Selection:")
         print(f"  • Cases won: {template_wins}/{total} ({100*template_wins//total}%)")

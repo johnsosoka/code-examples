@@ -12,7 +12,7 @@ DO NOT use free-form SQL generation in production systems.
 """
 
 import re
-from typing import Optional, Dict, Any, List
+from typing import Any
 from dataclasses import dataclass
 
 from .schema import get_schema_description, USERS_TABLE, ORDERS_TABLE
@@ -23,8 +23,8 @@ class SQLGenerationResult:
     """Result of SQL generation attempt."""
     query: str
     is_valid: bool
-    risks: List[str]
-    warnings: List[str]
+    risks: list[str]
+    warnings: list[str]
 
 
 class FreeFormSQLGenerator:
@@ -35,11 +35,11 @@ class FreeFormSQLGenerator:
     without constraints. Spoiler: it's not pretty.
     
     Example:
-        >>> generator = FreeFormSQLGenerator()
-        >>> result = generator.generate("Find orders for user 123")
-        >>> print(result.query)
+        >>> generator = FreeFormSQLGenerator()  # doctest: +SKIP
+        >>> result = generator.generate("Find orders for user 123")  # doctest: +SKIP
+        >>> print(result.query)  # doctest: +SKIP
         SELECT * FROM orders WHERE user_id = 123
-        >>> print(result.risks)
+        >>> print(result.risks)  # doctest: +SKIP
         ['Potential SQL injection: unparameterized user input']
     """
     
@@ -83,15 +83,15 @@ class FreeFormSQLGenerator:
             warnings=warnings
         )
     
-    def _simulate_llm_output(self, request: str) -> tuple[str, List[str], List[str]]:
+    def _simulate_llm_output(self, request: str) -> tuple[str, list[str], list[str]]:
         """
         Simulate various problematic LLM outputs.
         
         This demonstrates common failure modes of free-form SQL generation.
         """
         request_lower = request.lower()
-        risks: List[str] = []
-        warnings: List[str] = []
+        risks: list[str] = []
+        warnings: list[str] = []
         
         # Simulate SQL injection vulnerability
         if "user" in request_lower and ("123" in request or "id" in request_lower):
@@ -156,7 +156,7 @@ class FreeFormSQLGenerator:
         
         return True
     
-    def _detect_risks(self, query: str) -> List[str]:
+    def _detect_risks(self, query: str) -> list[str]:
         """
         Detect security risks in generated SQL.
         
@@ -166,7 +166,7 @@ class FreeFormSQLGenerator:
         Returns:
             List of detected risk descriptions
         """
-        risks: List[str] = []
+        risks: list[str] = []
         query_upper = query.upper()
         
         # Check for dangerous keywords

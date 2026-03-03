@@ -6,11 +6,10 @@ LangGraph workflow using modern LangGraph 1.0+ APIs.
 
 from typing import TypedDict, Annotated
 from langgraph.graph import StateGraph, START, END
-from langgraph.graph.message import add_messages
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-from src.common.registry import IndexedRegistry
+from ..common.registry import IndexedRegistry
 
 
 class QuoteSelectionOutput(BaseModel):

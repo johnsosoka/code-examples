@@ -10,14 +10,16 @@ the index-based approach guarantees perfect accuracy.
 """
 
 import os
-import sys
 from pathlib import Path
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from wrong_way import extract_quotes_wrong_way, verify_quotes_accuracy
-from right_way import extract_quotes_right_way, verify_quotes_deterministic
+from .wrong_way import extract_quotes_wrong_way, verify_quotes_accuracy, FreeFormQuotes
+from .right_way import (
+    extract_quotes_right_way,
+    verify_quotes_deterministic,
+    index_sentences,
+    QuoteSelection,
+    SelectedQuote,
+)
 
 
 def load_sample_essay() -> str:
@@ -41,9 +43,9 @@ def print_separator(char: str = "-", width: int = 80) -> None:
 
 def run_wrong_way_demo(essay_text: str, topic: str) -> None:
     """Run the WRONG way demo: free-form quote generation.
-    
+
     This demonstrates the problematic approach where we ask the LLM
-to generate quotes directly, which can lead to hallucinations
+    to generate quotes directly, which can lead to hallucinations
     and inaccuracies.
     
     Args:
@@ -61,7 +63,6 @@ to generate quotes directly, which can lead to hallucinations
         if not os.getenv("OPENAI_API_KEY"):
             print("\n⚠️  OPENAI_API_KEY not set. Using mock response for demonstration.\n")
             # Mock response for demo purposes
-            from wrong_way import FreeFormQuotes
             result = FreeFormQuotes(
                 quotes=[
                     "Artificial intelligence has emerged as one of the most transformative technologies in modern healthcare.",
@@ -133,40 +134,37 @@ def run_right_way_demo(essay_text: str, topic: str) -> None:
         if not os.getenv("OPENAI_API_KEY"):
             print("\n⚠️  OPENAI_API_KEY not set. Using mock response for demonstration.\n")
             # Mock response for demo purposes
-            from right_way import IndexedSentenceRegistry, QuoteSelection
-            registry = IndexedSentenceRegistry(essay_text)
-            
-            # Simulate LLM selecting some indices
+            indexed = index_sentences(essay_text)
+
+            # Simulate LLM selecting some indices with per-quote reasoning
             mock_selection = QuoteSelection(
-                selected_indices=[0, 2, 7],
-                reasoning="Sentences 0 and 2 discuss AI's transformative impact on healthcare. Sentence 7 addresses accountability concerns."
+                selections=[
+                    SelectedQuote(index=0, reasoning="Introduces AI as transformative in healthcare"),
+                    SelectedQuote(index=2, reasoning="Highlights diagnostic capability of ML"),
+                    SelectedQuote(index=7, reasoning="Addresses accountability concerns"),
+                ]
             )
-            
+
+            indices = [s.index for s in mock_selection.selections]
             result = {
-                "quotes": registry.get_sentences_by_indices(mock_selection.selected_indices),
-                "selected_indices": mock_selection.selected_indices,
-                "reasoning": mock_selection.reasoning,
-                "registry": registry
+                "quotes": indexed.get(indices),
+                "selections": mock_selection.selections,
+                "indexed": indexed,
             }
         else:
             result = extract_quotes_right_way(essay_text, topic)
-            registry = result["registry"]
-        
-        print(f"\n📊 LLM Reasoning:")
-        print(f"   {result['reasoning']}\n")
-        
-        print(f"🔢 Selected Indices: {result['selected_indices']}\n")
-        
+
         print(f"📝 Retrieved Quotes ({len(result['quotes'])} found):")
-        for i, (idx, quote) in enumerate(zip(result['selected_indices'], result['quotes']), 1):
-            print(f"\n   [{i}] Index [{idx}]: {quote}")
-        
+        for i, (selection, quote) in enumerate(zip(result['selections'], result['quotes']), 1):
+            print(f"\n   [{i}] Index [{selection.index}]: {quote}")
+            print(f"       Reasoning: {selection.reasoning}")
+
         # Verify accuracy
         print("\n🔍 Accuracy Verification:")
         verification = verify_quotes_deterministic(
-            essay_text, 
-            result['quotes'], 
-            result['registry']
+            essay_text,
+            result['quotes'],
+            result['indexed'],
         )
         
         print(f"   Total quotes: {verification['total_quotes']}")

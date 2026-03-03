@@ -10,16 +10,11 @@ This module demonstrates the secure approach to Text-to-SQL:
 ✅ RECOMMENDED: Use this approach for all production Text-to-SQL systems.
 """
 
-import sys
-from typing import Optional, Dict, Any, List
+from typing import Any
 from dataclasses import dataclass
-from pathlib import Path
 
-# Add parent to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from common.registry import IndexedRegistry
-from common.models import QuerySelection
+from ..common.registry import IndexedRegistry
+from ..common.models import QuerySelection
 from .schema import (
     QUERY_TEMPLATES,
     get_template_registry,
@@ -34,7 +29,7 @@ class TemplateSelectionResult:
     """Result of template selection and rendering."""
     template_index: int
     template_name: str
-    parameters: Dict[str, Any]
+    parameters: dict[str, Any]
     rendered_query: str
     is_valid: bool
     validation_message: str
@@ -95,7 +90,7 @@ class TemplateSQLGenerator:
     def generate(
         self,
         template_index: int,
-        parameters: Dict[str, Any]
+        parameters: dict[str, Any]
     ) -> TemplateSelectionResult:
         """
         Generate SQL by rendering a pre-validated template.

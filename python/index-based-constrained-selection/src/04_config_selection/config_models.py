@@ -5,8 +5,7 @@ These models enforce strict validation rules that configurations must satisfy.
 Any configuration that doesn't meet these constraints will fail validation.
 """
 
-from typing import Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class LLMConfig(BaseModel):
@@ -50,6 +49,16 @@ class LLMConfig(BaseModel):
         description="Number of retry attempts on failure"
     )
     
+    model_config = ConfigDict(json_schema_extra={
+        "examples": [{
+            "model": "gpt-4",
+            "temperature": 0.0,
+            "max_tokens": 1000,
+            "timeout": 30,
+            "retries": 3,
+        }]
+    })
+
     @field_validator('model')
     @classmethod
     def validate_model(cls, v: str) -> str:
@@ -60,17 +69,6 @@ class LLMConfig(BaseModel):
                 f"Invalid model '{v}'. Must be one of: {allowed_models}"
             )
         return v
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "model": "gpt-4",
-                "temperature": 0.0,
-                "max_tokens": 1000,
-                "timeout": 30,
-                "retries": 3
-            }
-        }
 
 
 class DatabaseConfig(BaseModel):
@@ -100,14 +98,13 @@ class DatabaseConfig(BaseModel):
         description="Connection pool size"
     )
     
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "host": "localhost",
-                "port": 5432,
-                "pool_size": 10
-            }
-        }
+    model_config = ConfigDict(json_schema_extra={
+        "examples": [{
+            "host": "localhost",
+            "port": 5432,
+            "pool_size": 10,
+        }]
+    })
 
 
 # Pre-validated configuration templates

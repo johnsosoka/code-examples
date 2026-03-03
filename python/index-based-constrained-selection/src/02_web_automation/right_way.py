@@ -8,14 +8,8 @@ Instead of letting LLM hallucinate XPaths, we:
 4. System retrieves the exact, validated XPath
 """
 
-import sys
-from pathlib import Path
-
-# Add parent to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from common.registry import IndexedRegistry
-from common.models import ElementSelection
+from ..common.registry import IndexedRegistry
+from ..common.models import ElementSelection
 from .mock_page import WebElement, MOCK_PAGE
 
 

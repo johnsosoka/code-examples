@@ -13,8 +13,8 @@ that was in the original, with no possibility of hallucination or
 modification.
 """
 
-from typing import List, Dict
-from dataclasses import dataclass
+from typing import Any
+from dataclasses import dataclass, field
 from pydantic import BaseModel, Field
 import stanza
 from langchain_openai import ChatOpenAI
@@ -22,132 +22,61 @@ from langchain_core.prompts import ChatPromptTemplate
 
 
 @dataclass
-class IndexedSentence:
-    """A sentence with its index and text.
-    
+class IndexedSentences:
+    """Indexed sentences from a document, ready for LLM selection.
+
     Attributes:
-        index: The unique index of this sentence (0-based).
-        text: The exact text of the sentence.
+        sentences: Mapping of index to exact sentence text.
+        formatted_context: Pre-built "[0] Sentence..." string for LLM prompts.
     """
-    index: int
-    text: str
+    sentences: dict[int, str] = field(default_factory=dict)
+    formatted_context: str = ""
+
+    def get(self, indices: list[int]) -> list[str]:
+        """Look up sentences by index. Invalid indices are skipped."""
+        return [self.sentences[i] for i in indices if i in self.sentences]
 
 
-class IndexedSentenceRegistry:
-    """Registry for managing indexed sentences from a document.
-    
-    This class handles:
-    - Sentence segmentation using stanza NLP
-    - Index assignment
-    - Deterministic retrieval by index
-    
-    Example:
-        >>> registry = IndexedSentenceRegistry(essay_text)
-        >>> print(registry.get_formatted_sentences())
-        [0] First sentence here.
-        [1] Second sentence here.
-        >>> registry.get_sentences_by_indices([0, 2])
-        ['First sentence here.', 'Third sentence here.']
+def index_sentences(text: str, language: str = "en") -> IndexedSentences:
+    """Split text into sentences and return an indexed lookup.
+
+    Uses Stanford's stanza library for robust sentence segmentation
+    that handles abbreviations, quotations, and edge cases.
+
+    Args:
+        text: The full text to segment.
+        language: Stanza language code (default: "en").
+
+    Returns:
+        IndexedSentences with a sentence dict and formatted context string.
     """
-    
-    def __init__(self, text: str, language: str = "en"):
-        """Initialize the registry with text, splitting into sentences.
-        
-        Args:
-            text: The full text to segment into sentences.
-            language: The language code for stanza (default: "en" for English).
-        """
-        self.text = text
-        self.language = language
-        self.sentences: List[IndexedSentence] = []
-        self._split_sentences()
-    
-    def _split_sentences(self) -> None:
-        """Split the text into sentences using stanza NLP.
-        
-        This uses Stanford's stanza library for robust sentence segmentation
-        that handles abbreviations, quotations, and other edge cases better
-        than simple regex-based approaches.
-        """
-        # Initialize stanza pipeline (downloads model if needed)
-        nlp = stanza.Pipeline(
-            lang=self.language,
-            processors='tokenize',
-            verbose=False
-        )
-        
-        # Process the text
-        doc = nlp(self.text)
-        
-        # Extract sentences with indices
-        self.sentences = [
-            IndexedSentence(index=i, text=sentence.text.strip())
-            for i, sentence in enumerate(doc.sentences)
-        ]
-    
-    def get_formatted_sentences(self) -> str:
-        """Get all sentences formatted with their indices.
-        
-        Returns:
-            A formatted string with each sentence prefixed by its index
-            in the format "[0] Sentence text.\n[1] Next sentence."
-        """
-        lines = [f"[{s.index}] {s.text}" for s in self.sentences]
-        return "\n".join(lines)
-    
-    def get_sentences_by_indices(self, indices: List[int]) -> List[str]:
-        """Retrieve exact sentences by their indices.
-        
-        This is the key method that enables deterministic quoting.
-        Given a list of indices, it returns the exact text of those
-        sentences from the original document.
-        
-        Args:
-            indices: List of sentence indices to retrieve.
-            
-        Returns:
-            List of sentence texts in the order specified by indices.
-            Invalid indices are skipped.
-            
-        Example:
-            >>> registry.get_sentences_by_indices([0, 5, 3])
-            ['First sentence.', 'Sixth sentence.', 'Fourth sentence.']
-        """
-        result = []
-        for idx in indices:
-            if 0 <= idx < len(self.sentences):
-                result.append(self.sentences[idx].text)
-        return result
-    
-    def get_sentence_count(self) -> int:
-        """Return the total number of sentences."""
-        return len(self.sentences)
-    
-    def get_sentence_at(self, index: int) -> str:
-        """Get a single sentence by index.
-        
-        Args:
-            index: The sentence index.
-            
-        Returns:
-            The sentence text, or empty string if index is invalid.
-        """
-        if 0 <= index < len(self.sentences):
-            return self.sentences[index].text
-        return ""
+    nlp = stanza.Pipeline(lang=language, processors="tokenize", verbose=False)
+    doc = nlp(text)
+
+    sentences = {i: s.text.strip() for i, s in enumerate(doc.sentences)}
+    formatted_context = "\n".join(f"[{i}] {text}" for i, text in sentences.items())
+
+    return IndexedSentences(sentences=sentences, formatted_context=formatted_context)
+
+
+class SelectedQuote(BaseModel):
+    """A single quote selection: an index paired with its reasoning."""
+    index: int = Field(
+        description="Index of the selected sentence (0-based)"
+    )
+    reasoning: str = Field(
+        description="Brief explanation of why this sentence is relevant"
+    )
 
 
 class QuoteSelection(BaseModel):
     """Structured output for index-based quote selection.
-    
-    The LLM returns this structure containing the indices of sentences
-    it deems relevant to the topic, rather than generating the text itself.
+
+    The LLM returns a list of selections, each pairing a sentence index
+    with a reason for its relevance — rather than generating text itself.
     """
-    selected_indices: List[int] = Field(
-        description="Indices of sentences relevant to the topic (0-based)"
-    )
-    reasoning: str = Field(
-        description="Brief explanation of why these sentences were selected"
+    selections: list[SelectedQuote] = Field(
+        description="List of selected sentences with per-quote reasoning"
     )
 
 
@@ -156,7 +85,7 @@ def extract_quotes_right_way(
     topic: str,
     model: str = "gpt-4o-mini",
     temperature: float = 0
-) -> Dict[str, any]:
+) -> dict[str, Any]:
     """Extract quotes using the RIGHT way: index-based selection.
     
     This function demonstrates the correct approach to quote extraction:
@@ -178,29 +107,17 @@ def extract_quotes_right_way(
     Returns:
         Dictionary containing:
         - quotes: List of exact quotes from the original text
-        - selected_indices: The indices that were selected
-        - reasoning: LLM's explanation for the selection
-        - registry: The IndexedSentenceRegistry for further use
-        
-    Example:
-        >>> with open("essay.txt") as f:
-        ...     essay = f.read()
-        >>> result = extract_quotes_right_way(essay, "artificial intelligence")
-        >>> print(result['quotes'])
-        ['Machine learning algorithms can now analyze medical images...']
-        >>> # These quotes are guaranteed to be exact matches!
+        - selections: List of SelectedQuote objects (index + reasoning)
+        - indexed: The IndexedSentences lookup for verification
     """
-    # Step 1: Create indexed registry
-    registry = IndexedSentenceRegistry(essay_text)
-    
-    # Step 2: Get formatted sentences for the prompt
-    formatted_sentences = registry.get_formatted_sentences()
-    
-    # Step 3: Initialize LLM with structured output
+    # Step 1: Index the sentences
+    indexed = index_sentences(essay_text)
+
+    # Step 2: Initialize LLM with structured output
     llm = ChatOpenAI(model=model, temperature=temperature)
     structured_llm = llm.with_structured_output(QuoteSelection)
-    
-    # Step 4: Build the prompt
+
+    # Step 3: Build the prompt
     # CRITICAL: We ask the LLM to SELECT indices, not generate text
     prompt = ChatPromptTemplate.from_messages([
         ("system", """You are a helpful assistant that selects relevant sentences from essays.
@@ -220,81 +137,73 @@ Please select the indices of sentences that are relevant to the topic: {topic}
 
 Return the indices as a list of numbers.""")
     ])
-    
-    # Step 5: Run the chain
+
+    # Step 4: Run the chain
     chain = prompt | structured_llm
-    selection = chain.invoke({
-        "sentences": formatted_sentences,
+    selection: QuoteSelection = chain.invoke({
+        "sentences": indexed.formatted_context,
         "topic": topic
     })
-    
-    # Step 6: Deterministically retrieve exact sentences by index
-    # This is the key step - we get the EXACT text from the registry
-    quotes = registry.get_sentences_by_indices(selection.selected_indices)
-    
+
+    # Step 5: Deterministically retrieve exact sentences by index
+    indices = [s.index for s in selection.selections]
+    quotes = indexed.get(indices)
+
     return {
         "quotes": quotes,
-        "selected_indices": selection.selected_indices,
-        "reasoning": selection.reasoning,
-        "registry": registry
+        "selections": selection.selections,
+        "indexed": indexed
     }
 
 
 def verify_quotes_deterministic(
     original_text: str,
-    quotes: List[str],
-    registry: IndexedSentenceRegistry
+    quotes: list[str],
+    indexed: IndexedSentences,
 ) -> dict:
-    """Verify that quotes are exact matches from the registry.
-    
-    This function demonstrates the perfect accuracy of the index-based approach.
-    Every quote is guaranteed to be an exact substring of the original text.
-    
+    """Verify that quotes are exact matches from the indexed sentences.
+
+    Every quote retrieved via index lookup is guaranteed to be an exact
+    substring of the original text.
+
     Args:
         original_text: The original essay text.
         quotes: The list of quotes to verify.
-        registry: The IndexedSentenceRegistry used for extraction.
-        
+        indexed: The IndexedSentences used for extraction.
+
     Returns:
-        Dictionary with verification results:
-        - total_quotes: Number of quotes
-        - exact_matches: Always equal to total_quotes (guaranteed)
-        - accuracy_score: Always 100.0%
-        - all_in_registry: Whether all quotes are in the registry
+        Dictionary with verification results.
     """
-    results = {
+    known_sentences = set(indexed.sentences.values())
+    results: dict[str, Any] = {
         "total_quotes": len(quotes),
         "exact_matches": 0,
         "accuracy_score": 0.0,
         "all_in_registry": True,
-        "details": []
+        "details": [],
     }
-    
-    # Build set of all registry sentences for O(1) lookup
-    registry_sentences = {s.text for s in registry.sentences}
-    
+
     for quote in quotes:
-        is_in_registry = quote in registry_sentences
-        is_in_original = quote in original_text
-        
-        if is_in_registry and is_in_original:
+        in_index = quote in known_sentences
+        in_original = quote in original_text
+
+        if in_index and in_original:
             results["exact_matches"] += 1
             status = "exact_match"
         else:
             results["all_in_registry"] = False
-            status = "error"  # This should never happen!
-        
+            status = "error"
+
         results["details"].append({
             "quote": quote[:100] + "..." if len(quote) > 100 else quote,
             "status": status,
-            "in_registry": is_in_registry,
-            "in_original": is_in_original
+            "in_registry": in_index,
+            "in_original": in_original,
         })
-    
-    # Calculate accuracy (should always be 100%)
+
     if results["total_quotes"] > 0:
         results["accuracy_score"] = (results["exact_matches"] / results["total_quotes"]) * 100
     else:
-        results["accuracy_score"] = 100.0  # No quotes is technically 100% accurate
-    
+        results["accuracy_score"] = 100.0
+
     return results

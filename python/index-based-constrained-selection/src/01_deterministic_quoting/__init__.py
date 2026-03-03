@@ -11,10 +11,11 @@ then retrieve the exact text deterministically.
 """
 
 from .wrong_way import extract_quotes_wrong_way
-from .right_way import extract_quotes_right_way, IndexedSentenceRegistry
+from .right_way import extract_quotes_right_way, index_sentences, IndexedSentences
 
 __all__ = [
     "extract_quotes_wrong_way",
     "extract_quotes_right_way",
-    "IndexedSentenceRegistry",
+    "index_sentences",
+    "IndexedSentences",
 ]

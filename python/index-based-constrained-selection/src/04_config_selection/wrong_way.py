@@ -12,17 +12,9 @@ Problems:
 This is like asking someone to write a prescription without a formulary.
 """
 
-import sys
-from pathlib import Path
 from typing import Any
 
-# Handle imports for both module and script usage
-try:
-    from .config_models import LLMConfig
-except ImportError:
-    # Running as script
-    sys.path.insert(0, str(Path(__file__).parent))
-    from config_models import LLMConfig
+from .config_models import LLMConfig
 
 import yaml
 from pydantic import ValidationError

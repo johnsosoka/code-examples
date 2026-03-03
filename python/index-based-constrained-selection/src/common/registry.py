@@ -1,15 +1,9 @@
 """Generic indexed registry pattern for constrained selection."""
 
-from typing import TypeVar, Generic, Callable, Any, Optional
-from pydantic import BaseModel, Field
+from collections.abc import Callable, ItemsView
+from typing import TypeVar, Generic
 
 T = TypeVar("T")
-
-
-class SelectionResult(BaseModel):
-    """Result of an index-based selection."""
-    selected_index: int = Field(description="The index selected by the LLM")
-    reasoning: str = Field(description="Why this index was selected")
 
 
 class IndexedRegistry(Generic[T]):
@@ -24,15 +18,15 @@ class IndexedRegistry(Generic[T]):
         ...     0: "Option A",
         ...     1: "Option B",
         ... })
-        >>> item = registry.get(0)
-        >>> "Option A"
+        >>> registry.get(0)
+        'Option A'
     """
     
     def __init__(
         self,
         items: dict[int, T],
-        validator: Optional[Callable[[T], bool]] = None,
-        describer: Optional[Callable[[T], str]] = None,
+        validator: Callable[[T], bool] | None = None,
+        describer: Callable[[T], str] | None = None,
     ):
         """
         Initialize registry with pre-validated items.
@@ -86,5 +80,5 @@ class IndexedRegistry(Generic[T]):
     def __contains__(self, index: int) -> bool:
         return index in self._items
     
-    def items(self):
+    def items(self) -> ItemsView[int, T]:
         return self._items.items()

@@ -25,16 +25,10 @@ Key Insight:
   3. System guarantees validity (no runtime surprises)
 """
 
-import sys
-from pathlib import Path
+from typing import Any
 
-# Add parent to path for imports
-parent_dir = Path(__file__).parent.parent
-if str(parent_dir) not in sys.path:
-    sys.path.insert(0, str(parent_dir))
-
-from wrong_way import WrongWayConfigSelector
-from right_way import RightWayConfigSelector
+from .wrong_way import WrongWayConfigSelector
+from .right_way import RightWayConfigSelector
 
 
 def print_section_header(title: str) -> None:
@@ -66,23 +60,23 @@ def print_comparison_table() -> None:
 """)
 
 
-def run_wrong_way_demo() -> None:
+def run_wrong_way_demo() -> list[dict[str, Any]]:
     """Run the free-form configuration generation demo."""
     print_section_header("PART 1: WRONG WAY - FREE-FORM GENERATION")
-    
+
     selector = WrongWayConfigSelector()
     results = selector.demonstrate_failure_modes()
-    
+
     return results
 
 
-def run_right_way_demo() -> None:
+def run_right_way_demo() -> list[dict[str, Any]]:
     """Run the index-based configuration selection demo."""
     print_section_header("PART 2: RIGHT WAY - INDEX-BASED SELECTION")
-    
+
     selector = RightWayConfigSelector()
     results = selector.demonstrate_selection()
-    
+
     return results
 
 

@@ -5,9 +5,9 @@ This module demonstrates the security and reliability benefits of using
 indexed query template selection over free-form SQL generation.
 
 Examples:
-    >>> from src.text_to_sql import wrong_way, right_way
-    >>> wrong_way.demonstrate_risks()
-    >>> right_way.demonstrate_safety()
+    >>> from src.text_to_sql import wrong_way, right_way  # doctest: +SKIP
+    >>> wrong_way.demonstrate_risks()  # doctest: +SKIP
+    >>> right_way.demonstrate_safety()  # doctest: +SKIP
 """
 
 from .schema import USERS_TABLE, ORDERS_TABLE, QUERY_TEMPLATES
