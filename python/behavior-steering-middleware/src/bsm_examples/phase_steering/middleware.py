@@ -178,9 +178,12 @@ class PhaseSteeringMiddleware(AgentMiddleware):
         if self._transition_pending:
             return ToolMessage(
                 content=(
+                    f"<framework_instruction>\n"
                     f"A phase transition just occurred. "
                     f"Report your progress to the user before "
-                    f"using any tools in the {self._current_phase.display_name} phase."
+                    f"using any tools in the "
+                    f"{self._current_phase.display_name} phase.\n"
+                    f"</framework_instruction>"
                 ),
                 tool_call_id=tool_call_id,
             )
@@ -227,13 +230,15 @@ class PhaseSteeringMiddleware(AgentMiddleware):
             # Append a transition notice to the tool result so the agent
             # knows to report back to the user before starting the next phase.
             if isinstance(result, ToolMessage):
+                notice = (
+                    f"<framework_instruction>\n"
+                    f"Phase complete: {prev_phase.display_name} → "
+                    f"{next_phase.display_name}. "
+                    f"Report your progress to the user before continuing.\n"
+                    f"</framework_instruction>"
+                )
                 result = ToolMessage(
-                    content=(
-                        f"{result.content}\n\n"
-                        f"[Phase complete: {prev_phase.display_name} → "
-                        f"{next_phase.display_name}. "
-                        f"Report your progress to the user.]"
-                    ),
+                    content=f"{notice}\n\n{result.content}",
                     tool_call_id=result.tool_call_id,
                 )
 

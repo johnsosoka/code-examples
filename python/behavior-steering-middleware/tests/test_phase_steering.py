@@ -459,6 +459,7 @@ class TestPhaseSteeringMiddleware:
         result = middleware.wrap_tool_call(blocked_req, blocked_handler)
 
         assert isinstance(result, ToolMessage)
+        assert "<framework_instruction>" in result.content
         assert "phase transition just occurred" in result.content.lower()
         blocked_handler.assert_not_called()
 
