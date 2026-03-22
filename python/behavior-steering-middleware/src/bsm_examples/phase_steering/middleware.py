@@ -11,11 +11,13 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from langchain.agents.middleware import (
     AgentMiddleware,
+    AgentState,
     ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
 )
 from langchain_core.messages import ToolMessage
+from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from bsm_examples.injection import inject_framework_instruction
@@ -74,10 +76,18 @@ class PhaseSteeringMiddleware(AgentMiddleware):
         self._phase_iterations: dict[Phase, int] = {}
         self._phase_history: list[tuple[Phase, int]] = []
         self._total_iterations: int = 0
+        self._transition_pending: bool = False
 
     # ------------------------------------------------------------------
     # AgentMiddleware hooks
     # ------------------------------------------------------------------
+
+    def before_agent(
+        self, state: AgentState, runtime: Runtime,
+    ) -> dict[str, Any] | None:
+        """Clear the transition gate at the start of each invoke call."""
+        self._transition_pending = False
+        return None
 
     def wrap_model_call(
         self,
@@ -162,6 +172,19 @@ class PhaseSteeringMiddleware(AgentMiddleware):
         tool_name: str = str(request.tool_call["name"] or "")
         tool_call_id: str = str(request.tool_call.get("id") or "unknown")
 
+        # After a phase transition, block ALL tools until the next
+        # wrap_model_call clears the gate. This forces the agent to
+        # return to the user before starting the new phase.
+        if self._transition_pending:
+            return ToolMessage(
+                content=(
+                    f"A phase transition just occurred. "
+                    f"Report your progress to the user before "
+                    f"using any tools in the {self._current_phase.display_name} phase."
+                ),
+                tool_call_id=tool_call_id,
+            )
+
         phase_behavior = self.config.phases.get(self._current_phase)
         allowed_tools: list[str] = phase_behavior.allowed_tools if phase_behavior else []
 
@@ -188,16 +211,31 @@ class PhaseSteeringMiddleware(AgentMiddleware):
         # Check for phase transition AFTER the tool executes
         next_phase = self.detector.check_tool_transition(self._current_phase, tool_name)
         if next_phase is not None:
+            prev_phase = self._current_phase
             logger.info(
                 "Phase transition: %s -> %s (triggered by '%s')",
-                self._current_phase.name,
+                prev_phase.name,
                 next_phase.name,
                 tool_name,
             )
             self._phase_history.append(
-                (self._current_phase, self._phase_iterations.get(self._current_phase, 0))
+                (prev_phase, self._phase_iterations.get(prev_phase, 0))
             )
             self._current_phase = next_phase
+            self._transition_pending = True
+
+            # Append a transition notice to the tool result so the agent
+            # knows to report back to the user before starting the next phase.
+            if isinstance(result, ToolMessage):
+                result = ToolMessage(
+                    content=(
+                        f"{result.content}\n\n"
+                        f"[Phase complete: {prev_phase.display_name} → "
+                        f"{next_phase.display_name}. "
+                        f"Report your progress to the user.]"
+                    ),
+                    tool_call_id=result.tool_call_id,
+                )
 
         return result
 
@@ -221,6 +259,7 @@ class PhaseSteeringMiddleware(AgentMiddleware):
         self._phase_iterations = {}
         self._phase_history = []
         self._total_iterations = 0
+        self._transition_pending = False
         logger.debug("PhaseSteeringMiddleware reset")
 
     # ------------------------------------------------------------------

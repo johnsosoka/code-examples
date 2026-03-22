@@ -442,6 +442,44 @@ class TestPhaseSteeringMiddleware:
         assert middleware._total_iterations == 0
         assert middleware._phase_iterations == {}
 
+    def test_transition_gate_blocks_tools_until_next_invoke(self, middleware) -> None:
+        """After a transition, tools are blocked until before_agent clears the gate."""
+        from unittest.mock import MagicMock
+
+        from langchain_core.messages import ToolMessage
+
+        # Trigger transition: DISCOVERY → CURATION
+        tool_req = make_mock_tool_request("note_preferences", tool_call_id="t1")
+        handler = make_mock_tool_handler(content="ok", tool_call_id="t1")
+        middleware.wrap_tool_call(tool_req, handler)
+
+        # Next tool call should be blocked (transition pending)
+        blocked_req = make_mock_tool_request("filter_products", tool_call_id="t2")
+        blocked_handler = make_mock_tool_handler()
+        result = middleware.wrap_tool_call(blocked_req, blocked_handler)
+
+        assert isinstance(result, ToolMessage)
+        assert "phase transition just occurred" in result.content.lower()
+        blocked_handler.assert_not_called()
+
+        # wrap_model_call does NOT clear the gate (same invoke)
+        request = make_mock_request(messages=[HumanMessage(content="ok")])
+        middleware.wrap_model_call(request, make_mock_handler())
+
+        blocked2 = make_mock_tool_request("filter_products", tool_call_id="t2b")
+        blocked2_handler = make_mock_tool_handler()
+        middleware.wrap_tool_call(blocked2, blocked2_handler)
+        blocked2_handler.assert_not_called()
+
+        # before_agent (simulating next invoke) clears the gate
+        middleware.before_agent(MagicMock(), MagicMock())
+
+        # Now tools should work again
+        filter_req = make_mock_tool_request("filter_products", tool_call_id="t3")
+        filter_handler = make_mock_tool_handler(content="filtered", tool_call_id="t3")
+        result = middleware.wrap_tool_call(filter_req, filter_handler)
+        filter_handler.assert_called_once()
+
     def test_phase_history_is_a_copy(self, middleware) -> None:
         """phase_history should return a copy, not the internal list."""
         h1 = middleware.phase_history
@@ -458,37 +496,42 @@ class TestIntegration:
     """End-to-end workflow tests covering the full DISCOVERY -> COMPLETE path."""
 
     def test_full_workflow_transitions(self) -> None:
-        """Full tool-triggered workflow should traverse all four phases in order."""
+        """Full tool-triggered workflow with before_agent between transitions."""
+        from unittest.mock import MagicMock
+
         from bsm_examples.phase_steering.middleware import PhaseSteeringMiddleware
         from bsm_examples.phase_steering.models import Phase
 
         config = _make_config()
         middleware = PhaseSteeringMiddleware(config)
+        mock_state = MagicMock()
+        mock_runtime = MagicMock()
 
-        # DISCOVERY phase — trigger with note_preferences
+        # DISCOVERY → CURATION
         assert middleware.current_phase == Phase.DISCOVERY
-
         note_req = make_mock_tool_request("note_preferences", tool_call_id="t1")
-        note_handler = make_mock_tool_handler(content="ok", tool_call_id="t1")
-        middleware.wrap_tool_call(note_req, note_handler)
-
+        middleware.wrap_tool_call(note_req, make_mock_tool_handler(content="ok", tool_call_id="t1"))
         assert middleware.current_phase == Phase.CURATION
 
-        # CURATION phase — trigger with shortlist_items
-        shortlist_req = make_mock_tool_request("shortlist_items", tool_call_id="t2")
-        shortlist_handler = make_mock_tool_handler(content="ok", tool_call_id="t2")
-        middleware.wrap_tool_call(shortlist_req, shortlist_handler)
+        # Simulate new invoke (before_agent clears the gate)
+        middleware.before_agent(mock_state, mock_runtime)
 
+        # CURATION → RECOMMENDATION
+        shortlist_req = make_mock_tool_request("shortlist_items", tool_call_id="t2")
+        middleware.wrap_tool_call(
+            shortlist_req, make_mock_tool_handler(content="ok", tool_call_id="t2"),
+        )
         assert middleware.current_phase == Phase.RECOMMENDATION
 
-        # RECOMMENDATION phase — trigger with present_recommendation
-        rec_req = make_mock_tool_request("present_recommendation", tool_call_id="t3")
-        rec_handler = make_mock_tool_handler(content="ok", tool_call_id="t3")
-        middleware.wrap_tool_call(rec_req, rec_handler)
+        middleware.before_agent(mock_state, mock_runtime)
 
+        # RECOMMENDATION → COMPLETE
+        rec_req = make_mock_tool_request("present_recommendation", tool_call_id="t3")
+        middleware.wrap_tool_call(
+            rec_req, make_mock_tool_handler(content="ok", tool_call_id="t3"),
+        )
         assert middleware.current_phase == Phase.COMPLETE
 
-        # History should record all three transitions
         assert len(middleware.phase_history) == 3
         phases_left = [p.name for p, _ in middleware.phase_history]
         assert phases_left == ["DISCOVERY", "CURATION", "RECOMMENDATION"]

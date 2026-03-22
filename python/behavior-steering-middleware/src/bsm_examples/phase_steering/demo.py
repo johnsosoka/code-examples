@@ -10,6 +10,7 @@ Requires OPENAI_API_KEY in the environment or a .env file.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -149,10 +150,37 @@ def create_personalization_config() -> PhaseConfig:
 # ---------------------------------------------------------------------------
 
 
+def _print_turn(
+    turn: int,
+    label: str,
+    user_msg: str,
+    result: dict[str, Any],
+    middleware: PhaseSteeringMiddleware,
+) -> None:
+    """Print a single turn's results."""
+    phase = result.get("current_phase", "UNKNOWN")
+    phase_iter = result.get("phase_iteration", 0)
+    total = result.get("total_iterations", 0)
+    last = result["messages"][-1]
+    preview = str(last.content)[:300]
+
+    print(f"--- Turn {turn}: {label} ---")
+    print(f"User: {user_msg}")
+    print(f"Agent: {preview}")
+    print(f"  [phase={phase} | iter={phase_iter} | total={total}]")
+    print()
+
+
 def run_demo() -> None:
-    """Run a multi-turn personalization session walking through all phases."""
+    """Run a multi-turn personalization session, one phase per turn.
+
+    Each turn is scoped to a single phase. The user drives the workflow
+    forward — the agent only uses tools available in the current phase,
+    and phase transitions fire when the user explicitly asks the agent
+    to use the trigger tool.
+    """
     print("=" * 64)
-    print("TOOL-TRIGGERED PHASE STEERING DEMO: Personalization Assistant")
+    print("TOOL-TRIGGERED PHASE STEERING DEMO")
     print("=" * 64)
     print()
 
@@ -173,8 +201,8 @@ def run_demo() -> None:
         tools=all_tools,
         system_prompt=(
             "You are a personalization shopping assistant. "
-            "You will receive <framework_instruction> tags with phase guidance — follow them and "
-            "and use only the tools specified for the current phase."
+            "You will receive <framework_instruction> tags with phase "
+            "guidance — follow them and use only the tools specified."
         ),
         middleware=[middleware],
         state_schema=PhaseAgentState,
@@ -182,36 +210,46 @@ def run_demo() -> None:
 
     conversation: list[HumanMessage] = []
 
+    # Each turn is scoped to one phase. The user drives transitions by
+    # asking the agent to perform the trigger action in a follow-up turn.
     turns = [
-        "Hi! I'm looking for a new laptop for software development and gaming. "
-        "Browse what's available and then note my preferences: "
-        "under $2000, 16GB+ RAM, good battery life.",
-        "Great, now filter those down and shortlist the top 2-3 options for me.",
-        "Perfect. Based on the shortlist, give me your final recommendation.",
+        # Turn 1 — DISCOVERY: browse and explore
+        (
+            "DISCOVERY",
+            "I'm looking for a laptop for software development and "
+            "some gaming. What's available?",
+        ),
+        # Turn 2 — still DISCOVERY: capture preferences (triggers → CURATION)
+        (
+            "DISCOVERY → CURATION",
+            "Good options. Please note my preferences: under $2000, "
+            "16GB+ RAM, and good battery life.",
+        ),
+        # Turn 3 — CURATION: filter and compare
+        (
+            "CURATION",
+            "Now filter those to match my preferences and compare "
+            "the top options.",
+        ),
+        # Turn 4 — still CURATION: shortlist (triggers → RECOMMENDATION)
+        (
+            "CURATION → RECOMMENDATION",
+            "Narrow it down to a shortlist of the top 2-3.",
+        ),
+        # Turn 5 — RECOMMENDATION: present final pick (triggers → COMPLETE)
+        (
+            "RECOMMENDATION → COMPLETE",
+            "Great. Give me your final recommendation.",
+        ),
     ]
 
-    for i, user_message in enumerate(turns, 1):
-        print(f"--- Turn {i} ---")
-        print(f"User: {user_message}")
-
-        conversation.append(HumanMessage(content=user_message))
+    for i, (label, user_msg) in enumerate(turns, 1):
+        conversation.append(HumanMessage(content=user_msg))
         result = agent.invoke(  # type: ignore[call-overload]
             {"messages": conversation},
-            config={"run_name": f"BSM: Phase Steering (turn {i})"},
+            config={"run_name": f"BSM: Phase Steering ({label})"},
         )
-
-        current_phase = result.get("current_phase", "UNKNOWN")
-        phase_iteration = result.get("phase_iteration", 0)
-        total_iterations = result.get("total_iterations", 0)
-
-        last_message = result["messages"][-1]
-        response_preview = str(last_message.content)[:300]
-        print(f"Agent: {response_preview}")
-        print(
-            f"  [phase={current_phase} | phase_iter={phase_iteration} | total={total_iterations}]"
-        )
-        print()
-
+        _print_turn(i, label, user_msg, result, middleware)
         conversation = list(result["messages"])
 
     print("=" * 64)
@@ -220,7 +258,6 @@ def run_demo() -> None:
     transitions = [(p.name, itr) for p, itr in middleware.phase_history]
     print(f"Phase transitions: {transitions}")
     print("=" * 64)
-    print()
 
 
 def main() -> None:
