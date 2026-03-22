@@ -195,7 +195,10 @@ def run_demo() -> None:
         print(f"User: {user_message}")
 
         conversation.append(HumanMessage(content=user_message))
-        result = agent.invoke({"messages": conversation})  # type: ignore[call-overload]
+        result = agent.invoke(  # type: ignore[call-overload]
+            {"messages": conversation},
+            config={"run_name": f"BSM: Phase Steering (turn {i})"},
+        )
 
         current_phase = result.get("current_phase", "UNKNOWN")
         phase_iteration = result.get("phase_iteration", 0)

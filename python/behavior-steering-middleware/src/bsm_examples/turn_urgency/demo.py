@@ -113,7 +113,10 @@ def run_demo() -> None:
         print(f"User: {question}")
 
         messages.append(HumanMessage(content=question))
-        result = agent.invoke({"messages": messages})  # type: ignore[attr-defined]
+        result = agent.invoke(  # type: ignore[attr-defined]
+            {"messages": messages},
+            config={"run_name": f"BSM: Shopping Agent (turn {i}/5)"},
+        )
 
         urgency_level = result.get("urgency_level", "UNKNOWN")
         turns_used = result.get("turns_used", i)

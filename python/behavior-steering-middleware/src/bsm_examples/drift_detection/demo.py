@@ -109,7 +109,8 @@ def run_demo() -> None:
                     )
                 )
             ]
-        }
+        },
+        config={"run_name": "BSM: Check-In Monitor"},
     )
 
     turns_since = result.get("turns_since_check_in", "N/A")
