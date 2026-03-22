@@ -1,0 +1,294 @@
+---
+title: "Agent Behavior-Steering Middleware"
+slug: "agent-behavior-steering-middleware"
+date: "2026-03-20"
+description: "Introducing behavior steering middleware — a pattern for shaping AI agent conduct through layered, composable directives."
+category: blog
+tags: []
+published: true
+image: "https://media.sosoka.io/img/blog/headers/web/orbtal-media-Esq0ovRY-Zs-unsplash.jpg"
+imageCredit:
+  name: "orbtal media"
+  url: "https://unsplash.com/@orbtalmedia"
+  source: "Unsplash"
+  sourceUrl: "https://unsplash.com/photos/brown-wooden-ships-wheel-Esq0ovRY-Zs"
+---
+
+## Intro
+
+Steering LLM behavior can be challenging. Particularly in dynamic situations, or with long-running ReAct agent loops where
+the context is constantly growing. The best way to guide behavior is in a well-defined workflow--often a cyclical or acyclical
+state graph constructed via a framework like LangGraph or PydanticAI. But, sometimes that simply isn't an option.
+
+I was recently on a project and my hands were tied, the client needed a dynamic conversational agent. A custom workflow
+wasn't on the table, and a ReAct agent had to be utilized.
+
+System prompt instructions only get you so far. As the conversation (or requirements) grow, the context degrades and we
+eventually have a less reliable agent.
+
+Is it possible to dynamically steer an agent with instructions, injecting into the context as needed?
+
+Yes, with "behavior-steering" middleware.
+
+## Middleware (Crash Course)
+
+I've blogged previously about [Using custom Middleware to remove PII](/blog/llms-and-hidden-data) and LangChain provides
+numerous [prebuilt middlewares](https://docs.langchain.com/oss/python/langchain/middleware/built-in). There are several
+middleware hooks that are provided.
+
+![](https://mintcdn.com/langchain-5e9cc07a/RAP6mjwE5G00xYsA/oss/images/middleware_final.png?fit=max&auto=format&n=RAP6mjwE5G00xYsA&q=85&s=eb4404b137edec6f6f0c8ccb8323eaf1)
+
+LangChain's `AgentMiddleware` gives you hooks at key points in the agent loop:
+
+- **`wrap_model_call`** — intercepts every LLM inference. You receive the `ModelRequest` (messages, system prompt, tools),
+  call the handler when you're ready, and return the `ModelResponse`. This is where you inject steering content.
+- **`wrap_tool_call`** — intercepts every tool execution. You can block, modify, or observe tool calls before and after
+  they run.
+- **`before_model` / `after_model`** — lighter hooks for logging or state inspection without wrapping the call.
+
+The key mechanism for behavior steering is `request.override(messages=...)`. Instead of mutating the system prompt (which
+should remain static) or appending new messages (which could produce an invalid API call structure), we modify an
+*existing* message in the conversation — specifically the last user or tool message — by prepending a
+`<framework_instruction>` block to its content:
+
+```python
+def inject_framework_instruction(messages, instruction):
+    """Prepend instruction to the last user or tool message."""
+    modified = list(messages)
+    tagged = f"<framework_instruction>\n{instruction}\n</framework_instruction>"
+
+    for i in range(len(modified) - 1, -1, -1):
+        msg = modified[i]
+        if isinstance(msg, (HumanMessage, ToolMessage)):
+            modified[i] = msg.__class__(
+                content=f"{tagged}\n\n{msg.content}", ...
+            )
+            return modified
+    return modified
+```
+
+The instruction comes *first* in the message content, followed by the original text. This ensures the model reads the
+behavioral directive before processing the user's actual input. The API call remains structurally valid — no extra
+messages, no system messages where they don't belong.
+
+The agent's system prompt simply sets the expectation: _"You will receive `<framework_instruction>` tags with
+guidance — follow them."_ The middleware decides *when* and *what* to inject based on runtime conditions.
+
+To write state back (so callers can observe what the middleware did), return an `ExtendedModelResponse` with a `Command`:
+
+```python
+return ExtendedModelResponse(
+    model_response=response,
+    command=Command(update={"my_field": value}),
+)
+```
+
+This pushes `my_field` into the agent's state dict, accessible on every `agent.invoke()` result.
+
+## Behavior-Steering Middleware
+
+The following sections represent a handful of abstracted behavior-steering middleware types that I've identified. At the
+time of writing this blog post, I have not identified any other similar projects leveraging this pattern. Do not consider
+the following exhaustive, certainly more is to be discovered.
+
+### Turn-Based Urgency
+
+The simplest behavior-steering middleware type to explore first is "Turn-Based Urgency". The concept is simple: your agent
+must do _something_ within an allocated turn budget. As turns are consumed, the middleware progressively shifts the agent's
+behavior from exploratory to decisive.
+
+Consider a shopping assistant with 5 turns to help a customer. Early on, the agent should ask questions and browse products.
+By the final turn, it *must* call `recommend_product` or the customer leaves empty-handed.
+
+The middleware computes a remaining-turn ratio and maps it to an urgency level:
+
+```python
+class UrgencyLevel(Enum):
+    EXPLORATION = auto()   # >60% budget — ask questions, explore
+    BALANCED = auto()      # 30-60% — start narrowing down
+    EFFICIENCY = auto()    # <30% — work toward recommendation
+    TERMINAL = auto()      # 0% — recommend NOW
+```
+
+Each level has a corresponding prompt modifier that gets injected into the last user message via `<framework_instruction>` tags. The terminal prompt is blunt:
+
+> _"FINAL TURN: Use the `recommend_product` tool NOW. Do not ask any more questions — recommend your best option
+> based on what you know."_
+
+The configuration also supports a `required_completion_tool` — if set, the middleware tracks whether that tool has been
+called and escalates further on the terminal turn if it hasn't:
+
+```python
+config = TurnUrgencyConfig(
+    max_turns=5,
+    required_completion_tool="recommend_product",
+)
+middleware = TurnUrgencyMiddleware(config)
+```
+
+Inside `wrap_model_call`, the flow is:
+
+1. Count turns from the message history
+2. Determine urgency level from the remaining ratio
+3. Inject the guidance into the last user/tool message as a `<framework_instruction>` block
+4. If terminal and the completion tool hasn't been called, add a forceful escalation line
+5. Call the model with the modified messages
+6. Scan the response for the completion tool
+7. Return state updates (`urgency_level`, `turns_remaining`, `completion_tool_called`)
+
+The beauty of this pattern is that the agent doesn't know it's being steered. It receives progressively stronger
+instructions that feel like natural system guidance. The shopping assistant naturally transitions from asking
+"What's your budget?" to delivering "I recommend the AudioMax 500 for your commute."
+
+### Behavior Drift-Detection / Correction
+
+Agents drift. They start a task using tools correctly, then gradually fall back on parametric knowledge — answering
+from memory instead of calling the tools they were given. This is especially common in long conversations where the
+original system instructions fade in the context window.
+
+The "Check-In Monitor" pattern detects this by tracking a single, simple metric: _how many turns since the agent
+last called a specific tool?_
+
+```python
+config = CheckInConfig(
+    target_tool="send_message",
+    max_silent_turns=2,
+)
+```
+
+The `CheckInDetector` maintains three counters:
+
+- `turns_since_target` — resets to 0 when the target tool is called, increments otherwise
+- `intervention_count` — how many reminders have been injected so far
+- `turns_since_last_intervention` — cooldown timer to avoid nagging
+
+Intervention fires when all three gates are open:
+
+```python
+def should_intervene(self) -> bool:
+    silent_enough = self.turns_since_target >= self._config.max_silent_turns
+    budget_available = self.intervention_count < self._config.max_interventions
+    cooldown_elapsed = (
+        self.turns_since_last_intervention >= self._config.cooldown_turns
+    )
+    return silent_enough and budget_available and cooldown_elapsed
+```
+
+When it fires, the middleware injects a configurable reminder — `"You have not sent a status update in
+{turns_since} turns. Please use the send_message tool to report your progress."` — as a `<framework_instruction>`
+block prepended to the last user or tool message.
+
+The agent doesn't see this as a correction. It sees guidance woven into the conversation, processes it, and (usually) complies.
+After recording the turn, the detector checks whether the response included the target tool call and resets the counter
+if so.
+
+This is intentionally simple. The earlier iteration of this pattern used weighted frequency scoring with sliding
+windows and recency bias — but in practice, the question is almost always binary: "has the agent used tool X recently?"
+A counter answers that question without the complexity.
+
+### Phase-Steering
+
+If your agent needs to operate through phases — like "understand, explore, recommend" — and you can reliably identify
+phase boundaries, then phase-steering middleware gives you deterministic workflow control inside a ReAct agent loop.
+
+The key insight: **tools are phase signals**. When a customer-facing agent calls `note_preferences`, that's a natural
+signal that discovery is complete and curation should begin. When it calls `shortlist_items`, curation is done.
+We don't need heuristics or content analysis — the tool calls *are* the phase boundaries.
+
+The configuration maps this explicitly:
+
+```python
+PhaseConfig(
+    phases={
+        Phase.DISCOVERY: PhaseBehavior(
+            system_prompt_addition="Ask questions to understand needs...",
+            allowed_tools=["browse_catalog", "note_preferences"],
+        ),
+        Phase.CURATION: PhaseBehavior(
+            system_prompt_addition="Filter and compare products...",
+            allowed_tools=["filter_products", "compare_options", "shortlist_items"],
+        ),
+        Phase.RECOMMENDATION: PhaseBehavior(
+            system_prompt_addition="Present your recommendation...",
+            allowed_tools=["present_recommendation"],
+        ),
+    },
+    transitions=[
+        PhaseTransitionRule(
+            from_phase=Phase.DISCOVERY,
+            to_phase=Phase.CURATION,
+            trigger_tool="note_preferences",
+        ),
+        PhaseTransitionRule(
+            from_phase=Phase.CURATION,
+            to_phase=Phase.RECOMMENDATION,
+            trigger_tool="shortlist_items",
+        ),
+    ],
+)
+```
+
+This middleware uses *two* hooks. `wrap_model_call` handles guidance injection — before each LLM call, it prepends a
+`<framework_instruction>` block to the last user message describing the current phase, its objectives, and which tools
+are available. `wrap_tool_call` handles two responsibilities: enforcing tool allow-lists and detecting phase transitions.
+
+The enforcement is straightforward — if the agent tries to call `filter_products` during the DISCOVERY phase, it
+gets a `ToolMessage` error explaining that the tool isn't available yet. The agent sees the error, adjusts, and
+uses an allowed tool instead.
+
+The transition detection happens *after* the tool executes:
+
+```python
+def wrap_tool_call(self, request, handler):
+    # 1. Enforce allow-list
+    if tool_name not in allowed_tools:
+        return ToolMessage(content="Tool not available in this phase...")
+
+    # 2. Execute the tool
+    result = handler(request)
+
+    # 3. Check for phase transition
+    next_phase = self.detector.check_tool_transition(
+        self._current_phase, tool_name
+    )
+    if next_phase is not None:
+        self._current_phase = next_phase
+
+    return result
+```
+
+The detector is trivially simple — a config lookup, not a heuristic engine:
+
+```python
+class ToolTriggeredDetector:
+    def check_tool_transition(self, current_phase, tool_name):
+        rule = self.config.get_transition_for_tool(current_phase, tool_name)
+        return rule.to_phase if rule else None
+```
+
+This means the next `wrap_model_call` automatically injects CURATION guidance because `_current_phase` has already
+been updated. The agent seamlessly transitions from "ask questions about what you're looking for" to "filter and
+compare these products based on what the customer said."
+
+Phase steering transforms a flat ReAct loop into a structured workflow without building a custom state graph. The
+agent still has full autonomy within each phase — it decides what to say, which tools to call, and how to respond —
+but the middleware constrains *which* tools are available and *what* behavioral guidance it receives at each stage.
+
+## Conclusion
+
+Behavior-steering middleware isn't a replacement for well-designed agent workflows. When you can build a proper
+state graph with explicit nodes and edges, you should. But when you're constrained to a ReAct agent — whether by
+client requirements, framework limitations, or the inherently dynamic nature of the conversation — these patterns
+give you a practical way to shape agent behavior without modifying the model or the agent architecture.
+
+The three patterns address different failure modes:
+
+- **Turn-based urgency** prevents open-ended conversations from running indefinitely without delivering a result.
+- **Check-in monitoring** catches agents that silently stop using the tools they were given.
+- **Phase steering** imposes workflow structure on an otherwise unstructured agent loop.
+
+They share a common mechanism: intercept the model call, evaluate a runtime condition, and inject
+`<framework_instruction>`-tagged guidance into an existing message. The agent doesn't know it's being steered — it
+just sees instructions woven into the conversation that happen to arrive at exactly the right moment.
+
+All example implementations are available in the [companion repository](https://github.com/johnsosoka/code-examples/tree/main/python/behavior-steering-middleware).

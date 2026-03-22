@@ -10,7 +10,7 @@ Covers:
 from __future__ import annotations
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from bsm_examples.drift_detection.detector import CheckInDetector
 from bsm_examples.drift_detection.middleware import CheckInMiddleware
@@ -249,26 +249,19 @@ class TestCheckInMiddleware:
     def test_wrap_model_call_no_injection_when_healthy(
         self, middleware: CheckInMiddleware
     ) -> None:
-        """No system message injected when the agent is within threshold."""
+        """No framework_instruction injected when the agent is within threshold."""
         request = make_mock_request(messages=[HumanMessage(content="hi")])
         handler = make_mock_handler()
 
         middleware.wrap_model_call(request, handler)
 
-        # override should not have been called with a <system> message
-        # (it may be called 0 times or with original messages only)
-        for call_args in request.override.call_args_list:
-            messages = call_args.kwargs.get("messages", [])
-            system_injected = any(
-                isinstance(m, SystemMessage) and "<system>" in (m.content or "")
-                for m in messages
-            )
-            assert not system_injected
+        # override should not have been called (no intervention needed)
+        request.override.assert_not_called()
 
     def test_wrap_model_call_injects_when_drifting(
         self, middleware: CheckInMiddleware, config: CheckInConfig
     ) -> None:
-        """A <system> reminder is injected once silent turns exceed threshold."""
+        """A framework_instruction is injected once silent turns exceed threshold."""
         # Simulate enough silent turns to cross the threshold.
         for _ in range(config.max_silent_turns):
             middleware.detector.record_turn([_make_ai_no_tool()])
@@ -280,16 +273,13 @@ class TestCheckInMiddleware:
 
         middleware.wrap_model_call(request, handler)
 
-        # override must have been called and the injected messages must contain
-        # a SystemMessage with <system> tags.
+        # override must have been called and the HumanMessage should now
+        # contain a <framework_instruction> block.
         request.override.assert_called_once()
         injected_messages = request.override.call_args.kwargs["messages"]
-        system_msgs = [
-            m
-            for m in injected_messages
-            if isinstance(m, SystemMessage) and "<system>" in (m.content or "")
-        ]
-        assert len(system_msgs) == 1
+        human_msg = next(m for m in injected_messages if isinstance(m, HumanMessage))
+        assert "<framework_instruction>" in human_msg.content
+        assert "send_message" in human_msg.content
 
     def test_wrap_model_call_records_turn(
         self, middleware: CheckInMiddleware

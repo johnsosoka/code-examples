@@ -106,7 +106,7 @@ class CheckInDetector:
         """Build the formatted reminder string from the configured template.
 
         Returns:
-            Human-readable reminder to be wrapped in ``<system>`` tags.
+            Human-readable reminder to be wrapped in ``<framework_instruction>`` tags.
         """
         return self._config.reminder_template.format(
             turns_since=self.turns_since_target,

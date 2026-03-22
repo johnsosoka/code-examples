@@ -397,7 +397,7 @@ class TestTurnUrgencyMiddleware:
         assert middleware.current_urgency is None
 
     def test_process_messages_injects_urgency(self, middleware: TurnUrgencyMiddleware) -> None:
-        """Middleware should inject urgency guidance into messages."""
+        """Middleware should inject urgency guidance into the HumanMessage."""
         request = make_mock_request(messages=[HumanMessage(content="Hello")])
         handler = make_mock_handler()
 
@@ -406,18 +406,18 @@ class TestTurnUrgencyMiddleware:
         request.override.assert_called_once()
         call_kwargs = request.override.call_args.kwargs
         injected_messages = call_kwargs["messages"]
-        steering_msg = injected_messages[-1]
-        assert isinstance(steering_msg, SystemMessage)
-        assert isinstance(steering_msg.content, str)
-        assert "<system>" in steering_msg.content
-        assert "URGENCY:" in steering_msg.content
+        # The HumanMessage should now contain the framework_instruction
+        human_msg = injected_messages[0]
+        assert isinstance(human_msg, HumanMessage)
+        assert "<framework_instruction>" in human_msg.content
+        assert "URGENCY:" in human_msg.content
         assert middleware.current_urgency is not None
         assert middleware.current_urgency.current_level == UrgencyLevel.EXPLORATION
 
-    def test_process_messages_appends_steering_message(
+    def test_process_messages_modifies_existing_message(
         self, middleware: TurnUrgencyMiddleware
     ) -> None:
-        """Middleware should append a <system>-tagged message to the list."""
+        """Middleware should modify the last user message, not append a new one."""
         request = make_mock_request(messages=[HumanMessage(content="Hello")])
         handler = make_mock_handler()
 
@@ -426,10 +426,12 @@ class TestTurnUrgencyMiddleware:
         request.override.assert_called_once()
         call_kwargs = request.override.call_args.kwargs
         injected_messages = call_kwargs["messages"]
-        # Original message + steering message
-        assert len(injected_messages) == 2
-        assert isinstance(injected_messages[-1], SystemMessage)
-        assert "<system>" in injected_messages[-1].content
+        # Same number of messages — no new message appended
+        assert len(injected_messages) == 1
+        assert isinstance(injected_messages[0], HumanMessage)
+        assert "<framework_instruction>" in injected_messages[0].content
+        # Original content should come after the instruction
+        assert injected_messages[0].content.endswith("Hello")
 
     def test_urgency_transition_tracking(self, middleware: TurnUrgencyMiddleware) -> None:
         """Middleware should track urgency transitions across calls."""
@@ -517,10 +519,12 @@ class TestTurnUrgencyMiddleware:
         request.override.assert_called_once()
         call_kwargs = request.override.call_args.kwargs
         injected_messages = call_kwargs["messages"]
-        steering_content: str = injected_messages[-1].content
-        assert "URGENCY: TERMINAL" in steering_content
+        # The framework_instruction is injected into the last HumanMessage
+        human_msgs = [m for m in injected_messages if isinstance(m, HumanMessage)]
+        last_human = human_msgs[-1]
+        assert "URGENCY: TERMINAL" in last_human.content
         # Forceful escalation line should be present since tool was never called
-        assert "MUST" in steering_content or "NOW" in steering_content
+        assert "MUST" in last_human.content or "NOW" in last_human.content
 
 
 class TestIntegration:

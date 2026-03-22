@@ -173,7 +173,7 @@ def run_demo() -> None:
         tools=all_tools,
         system_prompt=(
             "You are a personalization shopping assistant. "
-            "You will receive <system> tags with phase guidance — follow them carefully "
+            "You will receive <framework_instruction> tags with phase guidance — follow them and "
             "and use only the tools specified for the current phase."
         ),
         middleware=[middleware],

@@ -79,7 +79,7 @@ def build_agent() -> object:
             "Help customers find the right product for their needs. "
             "Use search_products to explore options, get_product_details for specifics, "
             "and recommend_product when you are ready to make a suggestion. "
-            "You will receive <system> tags with behavioral guidance — follow them."
+            "You will receive <framework_instruction> tags with guidance — follow them."
         ),
         middleware=[middleware],
         state_schema=UrgencyAgentState,

@@ -52,8 +52,8 @@ class PhaseBehavior(BaseModel):
     """Behavior configuration for a single workflow phase.
 
     Attributes:
-        system_prompt_addition: Guidance text injected into the system prompt
-            while the agent is in this phase.
+        system_prompt_addition: Guidance text injected as a ``<framework_instruction>``-tagged
+            message while the agent is in this phase.
         allowed_tools: Tools the agent may call in this phase. An empty list
             means all tools are permitted.
         completion_criteria: Optional human-readable description of what

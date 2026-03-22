@@ -1,6 +1,6 @@
 """Phase steering middleware for LangGraph agents.
 
-Injects phase-appropriate guidance into the system prompt and handles
+Injects phase-appropriate guidance into the message stream and handles
 tool-triggered phase transitions via the AgentMiddleware API.
 """
 
@@ -15,9 +15,10 @@ from langchain.agents.middleware import (
     ModelRequest,
     ModelResponse,
 )
-from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
+from bsm_examples.injection import inject_framework_instruction
 from bsm_examples.phase_steering.detector import ToolTriggeredDetector
 from bsm_examples.phase_steering.models import Phase, PhaseBehavior, PhaseConfig
 from bsm_examples.phase_steering.state import PhaseAgentState
@@ -33,15 +34,15 @@ class PhaseSteeringMiddleware(AgentMiddleware):
 
     Implements the Tool-Triggered Phase Steering pattern:
 
-    - ``wrap_model_call``: Injects ``<system>``-tagged phase guidance (current phase
-      name, allowed tools, completion criteria) into the system prompt before each
+    - ``wrap_model_call``: Injects ``<framework_instruction>``-tagged phase guidance (current phase
+      name, allowed tools, completion criteria) into the message stream before each
       model call. Returns an ``ExtendedModelResponse`` with phase state updates.
 
     - ``wrap_tool_call``: Enforces per-phase tool allow-lists before execution, then
       checks for phase transitions AFTER the tool completes. Transitions update
       internal state immediately so the next ``wrap_model_call`` sees the new phase.
 
-    The agent's system prompt should mention that ``<system>`` tags will appear with
+    The agent's system prompt should mention that ``<framework_instruction>`` tags will appear with
     guidance so the model knows to follow them.
 
     Example:
@@ -53,7 +54,7 @@ class PhaseSteeringMiddleware(AgentMiddleware):
         ...     state_schema=PhaseAgentState,
         ...     system_prompt=(
         ...         "You are a personalization assistant. "
-        ...         "Follow <system> tags with phase guidance."
+        ...         "Follow <framework_instruction> tags with phase guidance."
         ...     ),
         ... )
     """
@@ -83,11 +84,11 @@ class PhaseSteeringMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse | ExtendedModelResponse:
-        """Inject phase guidance into the system prompt before each model call.
+        """Inject phase guidance into the message stream before each model call.
 
         Steps:
         1. Look up the ``PhaseBehavior`` for the current phase.
-        2. Build a ``<system>``-tagged guidance block with phase name, addition text,
+        2. Build a ``<framework_instruction>``-tagged guidance block with phase name, addition text,
            allowed tools, and completion criteria.
         3. Append a ``SystemMessage`` carrying that guidance to the request messages.
         4. Call the model.
@@ -106,8 +107,9 @@ class PhaseSteeringMiddleware(AgentMiddleware):
 
         if phase_behavior:
             guidance = self._build_guidance(self._current_phase, phase_behavior)
-            steering_msg = SystemMessage(content=f"<system>{guidance}</system>")
-            modified_messages = list(request.messages) + [steering_msg]
+            modified_messages = inject_framework_instruction(
+                list(request.messages), guidance,
+            )
             modified_request = request.override(messages=modified_messages)
             logger.debug(
                 "Injecting guidance for phase %s (iteration %d)",
@@ -226,14 +228,14 @@ class PhaseSteeringMiddleware(AgentMiddleware):
     # ------------------------------------------------------------------
 
     def _build_guidance(self, phase: Phase, behavior: PhaseBehavior) -> str:
-        """Compose the guidance text injected as a ``<system>`` message.
+        """Compose the guidance text injected as a ``<framework_instruction>`` message.
 
         Args:
             phase: The current phase (used for the phase label).
             behavior: Behavior configuration for the phase.
 
         Returns:
-            Multi-line guidance string (without the outer ``<system>`` tags).
+            Multi-line guidance string (without the outer ``<framework_instruction>`` tags).
         """
         parts: list[str] = [
             f"[PHASE: {phase.display_name}]",

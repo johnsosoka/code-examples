@@ -1,7 +1,7 @@
 """Worker Check-In Monitor middleware for LangGraph agents.
 
 Detects when an agent stops calling a designated tool (e.g. ``send_message``)
-and injects a ``<system>``-tagged reminder to nudge it back on track.
+and injects a ``<framework_instruction>``-tagged reminder to nudge it back on track.
 """
 
 from __future__ import annotations

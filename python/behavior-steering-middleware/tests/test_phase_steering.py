@@ -6,7 +6,7 @@ Full rewrite covering models, detector, middleware, and integration scenarios.
 from __future__ import annotations
 
 import pytest
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 
 from tests.helpers import (
     make_mock_handler,
@@ -337,7 +337,7 @@ class TestPhaseSteeringMiddleware:
         assert middleware.phase_history == []
 
     def test_wrap_model_call_injects_guidance(self, middleware) -> None:
-        """wrap_model_call must append a SystemMessage with phase tag."""
+        """wrap_model_call must inject framework_instruction into HumanMessage."""
         request = make_mock_request(messages=[HumanMessage(content="Hello")])
         handler = make_mock_handler()
 
@@ -345,11 +345,11 @@ class TestPhaseSteeringMiddleware:
 
         request.override.assert_called_once()
         injected_messages = request.override.call_args.kwargs["messages"]
-        last = injected_messages[-1]
-        assert isinstance(last, SystemMessage)
-        assert "<system>" in last.content
-        assert "[PHASE: Discovery]" in last.content
-        assert "Discover customer needs" in last.content
+        human_msg = injected_messages[0]
+        assert isinstance(human_msg, HumanMessage)
+        assert "<framework_instruction>" in human_msg.content
+        assert "[PHASE: Discovery]" in human_msg.content
+        assert "Discover customer needs" in human_msg.content
 
     def test_wrap_model_call_increments_iterations(self, middleware) -> None:
         """Each wrap_model_call should increment the total iteration counter."""
@@ -512,9 +512,10 @@ class TestIntegration:
         middleware.wrap_model_call(request, handler)
 
         injected_messages = request.override.call_args.kwargs["messages"]
-        last = injected_messages[-1]
-        assert "[PHASE: Curation]" in last.content
-        assert "Curate product options" in last.content
+        human_msg = injected_messages[0]
+        assert isinstance(human_msg, HumanMessage)
+        assert "[PHASE: Curation]" in human_msg.content
+        assert "Curate product options" in human_msg.content
 
     def test_blocked_tool_does_not_transition(self) -> None:
         """A blocked (not-allowed) tool call must not trigger a phase transition."""

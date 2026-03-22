@@ -16,9 +16,10 @@ from langchain.agents.middleware import (
     ModelRequest,
     ModelResponse,
 )
-from langchain_core.messages import BaseMessage, SystemMessage
+from langchain_core.messages import BaseMessage
 from langgraph.types import Command
 
+from bsm_examples.injection import inject_framework_instruction
 from bsm_examples.turn_urgency.calculator import UrgencyCalculator, UrgencyState
 from bsm_examples.turn_urgency.state import UrgencyAgentState
 
@@ -43,9 +44,9 @@ class TurnUrgencyMiddleware(AgentMiddleware):
     model responses for that tool call and forcefully escalates guidance on the
     terminal turn if the tool has not yet been invoked.
 
-    Steering content is injected as a SystemMessage with ``<system>`` tags
+    Steering content is injected as a SystemMessage with ``<framework_instruction>`` tags
     appended to the conversation messages — not by modifying the system prompt.
-    The agent's system prompt should mention that ``<system>`` tagged guidance
+    The agent's system prompt should mention that ``<framework_instruction>`` tagged guidance
     will appear in the conversation.
 
     Example:
@@ -62,7 +63,7 @@ class TurnUrgencyMiddleware(AgentMiddleware):
         ...     state_schema=UrgencyAgentState,
         ...     system_prompt=(
         ...         "You are a shopping assistant. "
-        ...         "You will receive <system> tags with behavioral guidance "
+        ...         "You will receive <framework_instruction> tags with behavioral guidance "
         ...         "— follow them."
         ...     ),
         ... )
@@ -161,22 +162,23 @@ class TurnUrgencyMiddleware(AgentMiddleware):
         request: ModelRequest,
         urgency: UrgencyState,
     ) -> ModelRequest:
-        """Build a modified ModelRequest with urgency guidance appended to messages.
+        """Build a modified ModelRequest with urgency guidance injected.
 
-        Injects a ``<system>``-tagged SystemMessage into the message list. When
-        terminal and the required completion tool has not yet been called,
-        appends a forceful escalation line to the guidance content.
+        Injects a ``<framework_instruction>`` block into the last user or
+        tool message. When terminal and the required completion tool has not
+        yet been called, appends a forceful escalation line.
 
         Args:
             request: Original model request.
             urgency: Current urgency state.
 
         Returns:
-            A new ModelRequest with an urgency guidance message appended.
+            A new ModelRequest with urgency guidance injected into the
+            last user/tool message.
         """
         modifier = self._calculator.get_prompt_modifier(urgency)
         guidance = (
-            f"<system>URGENCY: {urgency.current_level.name} "
+            f"URGENCY: {urgency.current_level.name} "
             f"(turn {urgency.turns_used}/{urgency.max_turns})\n"
             f"{modifier}"
         )
@@ -189,10 +191,9 @@ class TurnUrgencyMiddleware(AgentMiddleware):
         if needs_force:
             guidance += _TERMINAL_FORCE_LINE
 
-        guidance += "</system>"
-
-        steering_msg = SystemMessage(content=guidance)
-        modified_messages = list(request.messages) + [steering_msg]
+        modified_messages = inject_framework_instruction(
+            list(request.messages), guidance,
+        )
         return request.override(messages=modified_messages)
 
     @property

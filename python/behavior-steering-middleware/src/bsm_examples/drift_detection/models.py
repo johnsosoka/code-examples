@@ -43,5 +43,5 @@ class CheckInConfig(BaseModel):
             "You have not sent a status update in {turns_since} turns. "
             "Please use the `{tool}` tool to report your progress."
         ),
-        description="Template for the reminder message injected as a <system> tag",
+        description="Template for the reminder injected as a <framework_instruction>",
     )

@@ -8,8 +8,8 @@ demonstrate how to shape agent behavior at the orchestration layer without modif
 Behavior-Steering Middleware (BSM) intercepts agent execution flows to dynamically adjust behavior
 based on runtime context. Each middleware extends `AgentMiddleware` from `langchain.agents.middleware`
 and hooks into `create_agent` via `wrap_model_call`, `after_model`, and `wrap_tool_call`. Steering
-content is injected as `<system>`-tagged messages appended to the conversation — the system prompt is
-static and only declares that `<system>` tags will appear. State updates flow back to the agent via
+content is injected as `<framework_instruction>` blocks prepended to existing user or tool messages — the system
+prompt is static and only declares that `<framework_instruction>` tags will appear. State updates flow back via
 `ExtendedModelResponse` and `Command(update={...})`.
 
 | Pattern | Scenario | Use Case |
@@ -43,7 +43,7 @@ poetry run pytest tests/ -v
 `send_message`), leaving the system with no visibility into agent progress.
 
 **Solution:** `CheckInMiddleware` tracks turns since the last call to the target tool. When silence
-exceeds `max_silent_turns`, it injects a `<system>` reminder into the next model call.
+exceeds `max_silent_turns`, it injects a `<framework_instruction>` reminder into the next model call.
 
 ```mermaid
 flowchart LR
@@ -95,7 +95,7 @@ agent = create_agent(
     tools=[send_message, do_research],
     system_prompt=(
         "You are a research agent. Keep the team informed via the `send_message` tool. "
-        "You will receive <system> tags with guidance — follow them."
+        "You will receive <framework_instruction> tags with guidance — follow them."
     ),
     middleware=[middleware],
     state_schema=CheckInAgentState,
@@ -118,7 +118,7 @@ interventions = result.get("intervention_count")
 spending all turns on questions and never delivering a recommendation.
 
 **Solution:** `TurnUrgencyMiddleware` computes urgency from the remaining turn ratio and appends an
-urgency-tagged `<system>` modifier on every model call, shifting the agent from exploratory to
+urgency-tagged `<framework_instruction>` modifier on every model call, shifting the agent from exploratory to
 decisive. When `required_completion_tool` is set, the middleware escalates to `TERMINAL` urgency
 until that tool is called.
 
@@ -176,7 +176,7 @@ agent = create_agent(
     tools=[search_products, recommend_product],
     system_prompt=(
         "You are a shopping assistant. Help customers find the right product. "
-        "You will receive <system> tags with behavioral guidance — follow them."
+        "You will receive <framework_instruction> tags with behavioral guidance — follow them."
     ),
     middleware=[middleware],
     state_schema=UrgencyAgentState,
@@ -207,7 +207,7 @@ completion_tool_called = result.get("completion_tool_called")
 per-phase tool constraints without reliable enforcement.
 
 **Solution:** `PhaseSteeringMiddleware` detects phase transitions in `wrap_tool_call` (after a
-trigger tool executes) and injects phase-appropriate `<system>` guidance in `wrap_model_call`.
+trigger tool executes) and injects phase-appropriate `<framework_instruction>` guidance in `wrap_model_call`.
 Transitions are deterministic — no heuristics, no ambiguity.
 
 ```mermaid
@@ -333,7 +333,7 @@ agent = create_agent(
     tools=[browse_catalog, note_preferences, shortlist_items, present_recommendation],
     system_prompt=(
         "You are a personalization shopping assistant. "
-        "You will receive <system> tags with phase guidance — follow them and "
+        "You will receive <framework_instruction> tags with phase guidance — follow them and "
         "use only the tools specified for the current phase."
     ),
     middleware=[middleware],
@@ -425,10 +425,10 @@ poetry run pytest tests/ -v
 
 1. **Middleware pattern:** All three examples extend `AgentMiddleware` and integrate via
    `create_agent` without modifying the underlying model or agent logic.
-2. **Static system prompt:** The system prompt declares that `<system>` tags will appear but is
+2. **Static system prompt:** The system prompt declares that `<framework_instruction>` tags will appear but is
    never mutated at runtime. All steering content is appended as separate messages.
 3. **Injection via `request.override`:** `wrap_model_call` appends `SystemMessage` objects with
-   `<system>` tags to `request.messages` before the model call proceeds.
+   `<framework_instruction>` tags to `request.messages` before the model call proceeds.
 4. **Tool-triggered transitions:** Phase transitions fire in `wrap_tool_call` after the trigger
    tool executes — no heuristics, no scoring, deterministic advancement.
 5. **State observability:** Middleware writes diagnostics back to agent state via

@@ -2,8 +2,8 @@
 
 Intercepts model calls to detect when the agent has gone too many turns
 without calling the configured target tool (e.g. ``send_message``).
-When the silence threshold is reached, a ``<system>``-tagged reminder is
-appended to the message list before the model sees it.
+When the silence threshold is reached, a ``<framework_instruction>`` reminder
+is injected into the last user or tool message before the model sees it.
 """
 
 from __future__ import annotations
@@ -17,12 +17,12 @@ from langchain.agents.middleware import (
     ModelRequest,
     ModelResponse,
 )
-from langchain_core.messages import SystemMessage
 from langgraph.types import Command
 
 from bsm_examples.drift_detection.detector import CheckInDetector
 from bsm_examples.drift_detection.models import CheckInConfig
 from bsm_examples.drift_detection.state import CheckInAgentState
+from bsm_examples.injection import inject_framework_instruction
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +30,11 @@ logger = logging.getLogger(__name__)
 class CheckInMiddleware(AgentMiddleware):
     """Middleware that monitors a specific tool and reminds the agent to use it.
 
-    Steering content is injected as a ``<system>``-tagged ``SystemMessage``
-    appended to the conversation — the system prompt is not modified. The
-    agent's system prompt should mention that ``<system>`` tags will appear
-    with guidance so the model learns to act on them.
+    Steering content is injected as a ``<framework_instruction>`` block
+    prepended to the last user or tool message — the system prompt is not
+    modified and no new messages are appended. The agent's system prompt
+    should mention that ``<framework_instruction>`` tags will appear with
+    guidance.
 
     Example:
         >>> config = CheckInConfig(target_tool="send_message", max_silent_turns=2)
@@ -45,7 +46,8 @@ class CheckInMiddleware(AgentMiddleware):
         ...     state_schema=CheckInAgentState,
         ...     system_prompt=(
         ...         "You are a research agent. Send regular status updates. "
-        ...         "You will receive <system> tags with guidance — follow them."
+        ...         "You will receive <framework_instruction> tags with "
+        ...         "guidance — follow them."
         ...     ),
         ... )
     """
@@ -75,8 +77,8 @@ class CheckInMiddleware(AgentMiddleware):
         """Intercept the model call to inject check-in reminders when needed.
 
         Steps:
-        1. If the detector says to intervene, append a ``<system>`` reminder
-           and override the request messages before calling the handler.
+        1. If the detector says to intervene, inject a framework_instruction
+           into the last user/tool message via ``request.override``.
         2. Call the handler (the real model).
         3. Record the turn so counters stay accurate.
         4. Return an ExtendedModelResponse that writes check-in fields back
@@ -91,8 +93,9 @@ class CheckInMiddleware(AgentMiddleware):
         """
         if self._detector.should_intervene():
             reminder = self._detector.build_reminder()
-            steering_msg = SystemMessage(content=f"<system>{reminder}</system>")
-            modified_messages = list(request.messages) + [steering_msg]
+            modified_messages = inject_framework_instruction(
+                list(request.messages), reminder,
+            )
             request = request.override(messages=modified_messages)
             self._detector.record_intervention()
             logger.warning(

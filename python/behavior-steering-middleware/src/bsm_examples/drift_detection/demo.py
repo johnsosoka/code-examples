@@ -2,7 +2,7 @@
 
 A research agent is given a multi-step task. It tends to get absorbed in
 research and forget to send status updates. The CheckInMiddleware detects
-the silence and injects a <system> reminder after ``max_silent_turns`` turns
+the silence and injects a <framework_instruction> reminder after ``max_silent_turns`` turns
 without a ``send_message`` call.
 
 Usage:
@@ -64,7 +64,7 @@ SYSTEM_PROMPT = (
     "You are a diligent research agent working on a multi-part project. "
     "Use the available tools to gather information and compile a report. "
     "Keep the team informed of your progress via the `send_message` tool. "
-    "You will receive <system> tags with guidance during the task — follow them."
+    "You will receive <framework_instruction> tags with guidance — follow them."
 )
 
 
