@@ -1,33 +1,37 @@
-# Shopping Recommendation Agent -- Turn Urgency
+# Turn Urgency Middleware
 
 ```mermaid
 flowchart TD
-    A[ModelRequest arrives] --> B["UrgencyCalculator:<br/>count turns from messages"]
-    B --> C{"Determine level<br/>from remaining ratio"}
-    C --> D["EXPLORATION<br/>remaining > 60%"]
-    C --> E["BALANCED<br/>30-60%"]
-    C --> F["EFFICIENCY<br/>1-30%"]
-    C --> G["TERMINAL<br/>0% remaining"]
+    A[/"wrap_model_call receives request"/] --> B["Count turns from message history"]
+    B --> C{"Determine urgency level<br/>from remaining budget"}
 
-    D --> H["Build guidance:<br/>&lt;system&gt;URGENCY: EXPLORATION...&lt;/system&gt;"]
+    C --> D["EXPLORATION > 60%"]
+    C --> E["BALANCED 30-60%"]
+    C --> F["EFFICIENCY 1-30%"]
+    C --> G["TERMINAL 0%"]
+
+    D --> H
     E --> H
     F --> H
-    G --> I{"TERMINAL AND<br/>recommend_product<br/>not yet called?"}
-    I -- Yes --> J["Append forceful escalation:<br/>You MUST call recommend_product NOW"]
-    I -- No --> H
-    J --> H
 
-    H --> K["Append SystemMessage<br/>to request.messages"]
-    K --> L["handler(request) -- call LLM"]
-    L --> M[ModelResponse]
-    M --> N{"Scan response for<br/>recommend_product<br/>tool call"}
-    N -- Found --> O["completion_tool_seen = True"]
-    N -- Not found --> P[No change]
-    O --> Q["Return ExtendedModelResponse<br/>Command(update={<br/>  urgency_level,<br/>  turns_used,<br/>  turns_remaining,<br/>  is_terminal,<br/>  completion_tool_called<br/>})"]
-    P --> Q
+    G --> I{"Completion tool<br/>already called?"}
+    I -- No --> J["Append forceful escalation:<br/>You MUST call completion tool NOW"]
+    I -- Yes --> H
 
-    style J fill:#f38ba8
-    style H fill:#f9e2af
-    style K fill:#f9e2af
-    style Q fill:#a6e3a1
+    J --> H["Build urgency guidance"]
+    H --> K["Inject &lt;framework_instruction&gt;<br/>into last Human/ToolMessage"]
+
+    K --> L[Call LLM]
+    L --> M{"Scan response for<br/>completion tool call"}
+
+    M -- Found --> N["Mark completion tool seen"]
+    M -- Not found --> O[No change]
+
+    N --> P[Return state updates]
+    O --> P
+
+    style C fill:#89b4fa,color:#1e1e2e
+    style I fill:#89b4fa,color:#1e1e2e
+    style K fill:#f9e2af,color:#1e1e2e
+    style J fill:#f38ba8,color:#1e1e2e
 ```
