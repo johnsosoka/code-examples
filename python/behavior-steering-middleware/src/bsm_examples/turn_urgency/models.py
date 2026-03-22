@@ -1,56 +1,38 @@
-"""Type definitions for turn-based urgency middleware.
+"""Pydantic models and enums for turn-based urgency middleware.
 
-This module contains enums and Pydantic models for configuring and
-controlling urgency-based behavior steering.
+Contains the configuration models, urgency level enum, and prompt defaults
+used across the turn urgency package.
 """
 
 from __future__ import annotations
 
 from enum import Enum, auto
 
-from langchain.agents.middleware import AgentState
 from pydantic import BaseModel, Field, model_validator
-from typing_extensions import NotRequired
 
 
 class UrgencyLevel(Enum):
     """Four distinct urgency modes representing the agent's behavioral state.
 
-    The progression is designed to be gradual—each level removes some flexibility
+    The progression is designed to be gradual — each level removes some flexibility
     while maintaining core helpfulness until the terminal state.
     """
 
     EXPLORATION = auto()
-    """Full turn budget available. Agent is encouraged to:
-    - Ask clarifying questions
-    - Explore multiple solution approaches
-    - Provide comprehensive context and background
-    - Consider edge cases and alternatives
-    """
+    """Full turn budget available. Agent is encouraged to ask clarifying questions,
+    explore multiple solution approaches, and gather comprehensive information."""
 
     BALANCED = auto()
-    """Moderate budget remaining. Agent should:
-    - Answer directly while maintaining helpfulness
-    - Limit follow-up questions to critical items only
-    - Provide concise but complete responses
-    - Focus on the most likely solution paths
-    """
+    """Moderate budget remaining. Agent should start narrowing options and limit
+    follow-up questions to critical items only."""
 
     EFFICIENCY = auto()
-    """Low budget remaining. Agent must:
-    - Prioritize delivering answers over asking questions
-    - Make reasonable assumptions rather than seeking clarification
-    - Provide minimal viable solutions
-    - Avoid tangential information
-    """
+    """Low budget remaining. Agent must work toward a recommendation and avoid
+    unnecessary clarifying questions."""
 
     TERMINAL = auto()
-    """Final turn available. Agent is instructed to:
-    - Deliver any workable solution immediately
-    - No clarifying questions—use best judgment
-    - Summarize current progress if task incomplete
-    - Provide clear next steps for continuation if needed
-    """
+    """Final turn available. Agent must use the completion tool immediately
+    and deliver a recommendation based on available information."""
 
 
 class UrgencyThresholds(BaseModel):
@@ -77,7 +59,7 @@ class UrgencyThresholds(BaseModel):
     # TERMINAL is implicit: below efficiency_max
 
     @model_validator(mode="after")
-    def validate_order(self) -> "UrgencyThresholds":
+    def validate_order(self) -> UrgencyThresholds:
         """Ensure thresholds are in descending order."""
         if self.balanced_max >= self.exploration_max:
             raise ValueError("balanced_max must be less than exploration_max")
@@ -87,34 +69,35 @@ class UrgencyThresholds(BaseModel):
 
 
 class UrgencyPrompts(BaseModel):
-    """System prompt modifiers for each urgency level."""
+    """System prompt modifiers for each urgency level.
+
+    Defaults are tuned for a shopping recommendation scenario where the agent
+    must call `recommend_product` before the conversation ends.
+    """
 
     exploration: str = Field(
         default=(
-            "You have ample turns remaining. Feel free to ask clarifying questions, "
-            "explore multiple approaches, and provide comprehensive context. "
-            "Consider edge cases and discuss trade-offs openly."
+            "Feel free to ask about the customer's preferences, budget, and requirements. "
+            "Explore multiple product categories and options."
         ),
     )
     balanced: str = Field(
         default=(
-            "You have moderate turns remaining. Provide direct answers with minimal "
-            "follow-up questions. Focus on the most likely solution paths while "
-            "maintaining helpfulness and accuracy."
+            "Start narrowing down options. Ask only critical clarifying questions. "
+            "Begin considering which products best match their needs."
         ),
     )
     efficiency: str = Field(
         default=(
-            "You have limited turns remaining. Prioritize delivering solutions over "
-            "asking questions. Make reasonable assumptions and provide minimal viable "
-            "answers. Avoid tangential information."
+            "Time to work toward a recommendation. If you have enough information, "
+            "use the `recommend_product` tool to make your suggestion."
         ),
     )
     terminal: str = Field(
         default=(
-            "FINAL TURN: Deliver your best solution immediately without asking questions. "
-            "If the task is incomplete, summarize progress and provide clear next steps. "
-            "Do not ask for clarification—use your best judgment."
+            "FINAL TURN: Use the `recommend_product` tool NOW to give the customer a "
+            "recommendation. Do not ask any more questions — recommend your best option "
+            "based on what you know."
         ),
     )
 
@@ -128,6 +111,7 @@ class TurnUrgencyConfig(BaseModel):
         >>> config = TurnUrgencyConfig(max_turns=10)
         >>> config = TurnUrgencyConfig(
         ...     max_turns=5,
+        ...     required_completion_tool="recommend_product",
         ...     thresholds=UrgencyThresholds(balanced_max=0.5, efficiency_max=0.2),
         ... )
     """
@@ -162,25 +146,17 @@ class TurnUrgencyConfig(BaseModel):
         description="If True, only count agent messages toward budget",
     )
 
+    # Completion enforcement
+    required_completion_tool: str | None = Field(
+        default=None,
+        description="Tool that must be called by the final turn",
+    )
+
     @model_validator(mode="after")
-    def validate_counting_mode(self) -> "TurnUrgencyConfig":
+    def validate_counting_mode(self) -> TurnUrgencyConfig:
         """Ensure only one counting mode is enabled."""
         if self.count_human_turns_only and self.count_agent_turns_only:
             raise ValueError(
                 "Cannot enable both count_human_turns_only and count_agent_turns_only"
             )
         return self
-
-
-class UrgencyAgentState(AgentState):
-    """Agent state schema with urgency tracking fields.
-
-    Extends AgentState for use with create_agent and AgentMiddleware.
-    All urgency fields are optional (NotRequired) since they are populated
-    progressively as the middleware processes model calls.
-    """
-
-    urgency_level: NotRequired[str]
-    turns_used: NotRequired[int]
-    turns_remaining: NotRequired[int]
-    is_terminal: NotRequired[bool]

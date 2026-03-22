@@ -1,9 +1,12 @@
-"""Demonstration of Behavior Drift Detection middleware with a real LLM.
+"""Demo: Worker Heartbeat Monitor middleware.
 
-Runs a 5-turn math conversation using a real OpenAI model. The middleware
-monitors tool usage and injects corrective reminders when drift is detected.
+A research agent is given a multi-step task. It tends to get absorbed in
+research and forget to send status updates. The HeartbeatMiddleware detects
+the silence and injects a <system> reminder after ``max_silent_turns`` turns
+without a ``send_message`` call.
 
-Requires OPENAI_API_KEY in the environment or a .env file.
+Usage:
+    poetry run python -m bsm_examples.drift_detection.demo
 """
 
 from __future__ import annotations
@@ -19,136 +22,112 @@ from langchain.tools import tool  # noqa: E402
 from langchain_core.messages import HumanMessage  # noqa: E402
 from langchain_openai import ChatOpenAI  # noqa: E402
 
-from bsm_examples.drift_detection.middleware import (  # noqa: E402
-    DriftDetectionConfig,
-    DriftSteeringMiddleware,
-    ToolUsagePattern,
+from bsm_examples.drift_detection.middleware import HeartbeatMiddleware  # noqa: E402
+from bsm_examples.drift_detection.models import HeartbeatConfig  # noqa: E402
+from bsm_examples.drift_detection.state import HeartbeatAgentState  # noqa: E402
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Tool definitions
+# ---------------------------------------------------------------------------
+
+
+@tool
+def send_message(message: str) -> str:
+    """Send a status update message to the team."""
+    return f"Message sent: {message}"
+
+
+@tool
+def do_research(topic: str) -> str:
+    """Research a topic and return findings."""
+    return (
+        f"Research findings on '{topic}': [detailed findings here — "
+        "see internal docs for full analysis]"
+    )
+
+
+@tool
+def write_report(content: str) -> str:
+    """Write a section of the report."""
+    return f"Report section written: {content[:50]}..."
+
+
+# ---------------------------------------------------------------------------
+# Agent setup
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = (
+    "You are a diligent research agent working on a multi-part project. "
+    "Use the available tools to gather information and compile a report. "
+    "Keep the team informed of your progress via the `send_message` tool. "
+    "You will receive <system> tags with guidance during the task — follow them."
 )
-from bsm_examples.drift_detection.state import DriftAgentState  # noqa: E402
-
-logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
 
 
-@tool
-def calculate(a: float, b: float, operation: str) -> str:
-    """Perform arithmetic. Operations: add, subtract, multiply, divide."""
-    ops = {
-        "add": a + b,
-        "subtract": a - b,
-        "multiply": a * b,
-        "divide": a / b if b != 0 else float("inf"),
-    }
-    result = ops.get(operation, 0)
-    return f"{a} {operation} {b} = {result}"
-
-
-@tool
-def unit_convert(value: float, from_unit: str, to_unit: str) -> str:
-    """Convert between units. Supports miles/km, feet/meters."""
-    conversions = {
-        ("miles", "km"): 1.60934,
-        ("km", "miles"): 0.621371,
-        ("feet", "meters"): 0.3048,
-        ("meters", "feet"): 3.28084,
-    }
-    factor = conversions.get((from_unit, to_unit), 1.0)
-    return f"{value} {from_unit} = {value * factor:.2f} {to_unit}"
-
-
-def build_agent() -> tuple[object, DriftSteeringMiddleware]:
+def build_agent() -> tuple[object, HeartbeatMiddleware]:
     """Build the agent and middleware. Returns both for state inspection."""
-    pattern = ToolUsagePattern(
-        name="calculator_agent",
-        expected_tools={
-            "calculate": 0.8,
-            "unit_convert": 0.2,
-        },
-        required_tools=["calculate"],
-        minimum_frequencies={"calculate": 0.5},
-    )
-    config = DriftDetectionConfig(
-        history_window_size=5,
-        recency_bias=1.5,
-        warning_threshold=0.3,
-        intervention_threshold=0.6,
-        max_interventions_per_conversation=3,
+    config = HeartbeatConfig(
+        target_tool="send_message",
+        max_silent_turns=2,
+        max_interventions=3,
         cooldown_turns=1,
-        include_statistics=True,
     )
-    middleware = DriftSteeringMiddleware(pattern, config)
+    middleware = HeartbeatMiddleware(config)
     agent = create_agent(
         model=ChatOpenAI(model="gpt-4.1-mini"),
-        tools=[calculate, unit_convert],
-        system_prompt=(
-            "You are a calculator assistant. "
-            "Always use the calculate or unit_convert tools for math. "
-            "Never compute answers in your head — always call a tool. "
-            "You will receive <system> tags with behavioral guidance "
-            "— follow them."
-        ),
+        tools=[send_message, do_research, write_report],
+        system_prompt=SYSTEM_PROMPT,
         middleware=[middleware],
-        state_schema=DriftAgentState,
+        state_schema=HeartbeatAgentState,
     )
     return agent, middleware
 
 
 def run_demo() -> None:
-    """Run a 5-turn math conversation showing drift detection in action."""
+    """Run a 5-turn research conversation showing heartbeat monitoring in action."""
     print("=" * 60)
-    print("BEHAVIOR DRIFT DETECTION DEMO")
+    print("WORKER HEARTBEAT MONITOR DEMO")
     print("=" * 60)
-    print("Pattern: calculate (80%), unit_convert (20%)")
-    print("Intervention threshold: 0.6")
+    print("Monitoring: send_message (max silent turns: 2)")
     print()
 
     agent, middleware = build_agent()
 
-    turns = [
-        "What is 15 multiplied by 23?",
-        "Convert 5 miles to kilometers.",
-        "What is 144 divided by 12?",
-        "What is 99 plus 1?",
-        "What is 50 multiplied by 2?",
-    ]
+    result = agent.invoke(  # type: ignore[attr-defined]
+        {
+            "messages": [
+                HumanMessage(
+                    content=(
+                        "Please research and report on the following topics: "
+                        "1. Recent advances in renewable energy storage, "
+                        "2. Economic impact of offshore wind farms, "
+                        "3. Grid-scale battery technology. "
+                        "This is a multi-step task — be thorough and keep us posted."
+                    )
+                )
+            ]
+        }
+    )
 
-    messages: list[HumanMessage] = []
+    turns_since = result.get("turns_since_heartbeat", "N/A")
+    interventions = result.get("intervention_count", "N/A")
 
-    for i, question in enumerate(turns, 1):
-        print(f"--- Turn {i} ---")
-        print(f"User: {question}")
-
-        messages.append(HumanMessage(content=question))
-        result = agent.invoke({"messages": messages})  # type: ignore[attr-defined]
-
-        # Pull observability fields from agent state
-        drift_score = result.get("drift_score", 0.0)
-        intervention_count = result.get("intervention_count", 0)
-
-        # Show the last AI message as the response
-        last_message = result["messages"][-1]
-        print(f"Agent: {last_message.content[:120]}")
-        print(f"  drift_score={drift_score:.3f}  interventions={intervention_count}")
-        print()
-
-        # Carry full message history forward for the next turn
-        messages = list(result["messages"])
-
-    # Final report from the middleware's internal detector
-    report = middleware.get_drift_report()
-    print("=" * 60)
-    print("FINAL DRIFT REPORT")
-    print("=" * 60)
-    print(f"  Total turns recorded : {report['turn_count']}")
-    print(f"  Interventions        : {report['intervention_count']}")
-    print(f"  Final drift score    : {report['drift_score']:.3f}")
     print()
-    print("  Tool usage (expected vs observed):")
-    for tool_name, data in report["tool_comparison"].items():
-        print(
-            f"    {tool_name}: expected={data['expected']:.2f} "
-            f"observed={data['observed']:.2f}"
-        )
+    print("=" * 60)
+    print("FINAL STATE")
+    print("=" * 60)
+    print(f"  turns_since_heartbeat : {turns_since}")
+    print(f"  intervention_count    : {interventions}")
     print()
+    print("  Conversation:")
+    for msg in result["messages"]:
+        role = type(msg).__name__
+        content = msg.content if isinstance(msg.content, str) else str(msg.content)
+        print(f"  [{role}] {content[:160]}")
 
 
 def main() -> None:

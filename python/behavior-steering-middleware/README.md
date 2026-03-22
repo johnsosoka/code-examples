@@ -12,11 +12,11 @@ content is injected as `<system>`-tagged messages appended to the conversation �
 static and only declares that `<system>` tags will appear. State updates flow back to the agent via
 `ExtendedModelResponse` and `Command(update={...})`.
 
-| Pattern | Description | Use Case |
-|---------|-------------|----------|
-| **Behavior Drift Detection** | Monitors tool usage patterns and corrects when agents stop using tools | Preventing silent degradation in tool-calling agents |
-| **Turn-Based Urgency** | Escalates behavior as turn budget is consumed | Resource-constrained conversations (support, triage) |
-| **Phase-Based Steering** | Guides agents through multi-phase workflows | Research, analysis, and recommendation workflows |
+| Pattern | Scenario | Use Case |
+|---------|----------|----------|
+| **Worker Heartbeat Monitor** | Research agent that must periodically report status | Detecting silent tool-call gaps in long-running agents |
+| **Shopping Recommendation Agent** | Product advisor with a fixed turn budget | Budget-constrained conversations requiring a definite outcome |
+| **Tool-Triggered Personalization** | Personal shopping assistant progressing through workflow phases | Deterministic multi-phase workflows driven by tool calls |
 
 ## Quick Start
 
@@ -37,104 +37,111 @@ poetry run python -m bsm_examples.phase_steering.demo
 poetry run pytest tests/ -v
 ```
 
-## Pattern 1: Behavior Drift Detection
+## Pattern 1: Worker Heartbeat Monitor
 
-**Problem:** Agents gradually stop using tools and fall back on parametric knowledge, producing
-plausible-sounding but unverified answers.
+**Problem:** Agents absorbed in multi-step tasks stop calling a designated reporting tool (e.g.
+`send_message`), leaving the system with no visibility into agent progress.
 
-**Solution:** Monitor tool usage with a recency-weighted sliding window. When the drift score
-exceeds a threshold, inject a corrective `<system>` message into the next model call.
+**Solution:** `HeartbeatMiddleware` tracks turns since the last call to the target tool. When silence
+exceeds `max_silent_turns`, it injects a `<system>` reminder into the next model call.
 
 ```python
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langchain.tools import tool
-from bsm_examples.drift_detection.middleware import (
-    DriftDetectionConfig,
-    DriftSteeringMiddleware,
-    ToolUsagePattern,
+from bsm_examples.drift_detection import (
+    HeartbeatConfig,
+    HeartbeatMiddleware,
+    HeartbeatAgentState,
 )
-from bsm_examples.drift_detection.state import DriftAgentState
 
 
 @tool
-def calculate(a: float, b: float, operation: str) -> str:
-    """Perform arithmetic. Operations: add, subtract, multiply, divide."""
-    ...
+def send_message(message: str) -> str:
+    """Send a status update message to the team."""
+    return f"Message sent: {message}"
 
 
 @tool
-def unit_convert(value: float, from_unit: str, to_unit: str) -> str:
-    """Convert between units. Supports miles/km, feet/meters."""
-    ...
+def do_research(topic: str) -> str:
+    """Research a topic and return findings."""
+    return f"Research findings on '{topic}': ..."
 
 
-pattern = ToolUsagePattern(
-    name="calculator_agent",
-    expected_tools={"calculate": 0.8, "unit_convert": 0.2},
-    required_tools=["calculate"],
-    minimum_frequencies={"calculate": 0.5},
-)
-config = DriftDetectionConfig(
-    intervention_threshold=0.6,
+config = HeartbeatConfig(
+    target_tool="send_message",
+    max_silent_turns=2,
+    max_interventions=3,
     cooldown_turns=1,
-    max_interventions_per_conversation=3,
 )
-middleware = DriftSteeringMiddleware(pattern, config)
+middleware = HeartbeatMiddleware(config)
 
 agent = create_agent(
     model=ChatOpenAI(model="gpt-4.1-mini"),
-    tools=[calculate, unit_convert],
+    tools=[send_message, do_research],
     system_prompt=(
-        "You are a calculator assistant. Always use tools for math. "
-        "You will receive <system> tags with behavioral guidance — follow them."
+        "You are a research agent. Keep the team informed via the `send_message` tool. "
+        "You will receive <system> tags with guidance — follow them."
     ),
     middleware=[middleware],
-    state_schema=DriftAgentState,
+    state_schema=HeartbeatAgentState,
 )
 
-result = agent.invoke({"messages": [HumanMessage(content="What is 15 * 23?")]})
-drift_score = result.get("drift_score", 0.0)
-intervention_count = result.get("intervention_count", 0)
+result = agent.invoke({"messages": [HumanMessage(content="Research renewable energy storage.")]})
+turns_since = result.get("turns_since_heartbeat")
+interventions = result.get("intervention_count")
 ```
 
 **Key features:**
-- Sliding window (`deque`) with recency-weighted frequency scoring
-- Drift score 0.0 (no drift) to 1.0 (maximum drift)
-- Intervention cooldown to prevent message spam
-- Required-tool enforcement
-- `DriftAgentState` exposes `drift_score`, `intervention_count`, and `drift_report`
+- Single target tool monitored per middleware instance
+- Configurable silence threshold (`max_silent_turns`), intervention cap, and cooldown
+- Reminder text is a configurable template with `{turns_since}` and `{tool}` placeholders
+- `HeartbeatAgentState` exposes `turns_since_heartbeat` and `intervention_count`
 
-## Pattern 2: Turn-Based Urgency
+## Pattern 2: Shopping Recommendation Agent
 
-**Problem:** Agents maintain consistent behavior regardless of remaining turn budget, wasting turns
-on exploration when delivery is needed.
+**Problem:** Agents maintain consistent exploratory behavior regardless of remaining turn budget,
+spending all turns on questions and never delivering a recommendation.
 
-**Solution:** Compute urgency from remaining turns and append an urgency-tagged `<system>` modifier
-to every model call, shifting the agent from exploratory to decisive as the budget is consumed.
+**Solution:** `TurnUrgencyMiddleware` computes urgency from the remaining turn ratio and appends an
+urgency-tagged `<system>` modifier on every model call, shifting the agent from exploratory to
+decisive. When `required_completion_tool` is set, the middleware escalates to `TERMINAL` urgency
+until that tool is called.
 
 ```python
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langchain.tools import tool
-from bsm_examples.turn_urgency import TurnUrgencyConfig, TurnUrgencyMiddleware
-from bsm_examples.turn_urgency.types import UrgencyAgentState
+from bsm_examples.turn_urgency import (
+    TurnUrgencyConfig,
+    TurnUrgencyMiddleware,
+    UrgencyAgentState,
+)
 
 
 @tool
-def analyze_code(code_snippet: str) -> str:
-    """Analyze a code snippet for common issues."""
-    ...
+def search_products(query: str, category: str = "all") -> str:
+    """Search for products matching a query in the catalog."""
+    return f"Found products for '{query}' in {category}: [results]"
 
 
-config = TurnUrgencyConfig(max_turns=5)
+@tool
+def recommend_product(product_name: str, reason: str) -> str:
+    """Recommend a product to the customer with a reason."""
+    return f"Recommended '{product_name}': {reason}"
+
+
+config = TurnUrgencyConfig(
+    max_turns=5,
+    required_completion_tool="recommend_product",
+)
 middleware = TurnUrgencyMiddleware(config)
 
 agent = create_agent(
     model=ChatOpenAI(model="gpt-4.1-mini"),
-    tools=[analyze_code],
+    tools=[search_products, recommend_product],
     system_prompt=(
-        "You are a Python debugging assistant. "
+        "You are a shopping assistant. Help customers find the right product. "
         "You will receive <system> tags with behavioral guidance — follow them."
     ),
     middleware=[middleware],
@@ -142,110 +149,149 @@ agent = create_agent(
 )
 
 result = agent.invoke({"messages": messages})
-urgency_level = result.get("urgency_level")   # "EXPLORATION" | "BALANCED" | ...
+urgency_level = result.get("urgency_level")         # "EXPLORATION" | "BALANCED" | ...
 turns_remaining = result.get("turns_remaining")
+completion_tool_called = result.get("completion_tool_called")
 ```
 
 **Urgency levels:**
 
 | Level | Budget remaining | Injected behavior |
 |-------|-----------------|-------------------|
-| **EXPLORATION** | >60% | Ask clarifying questions, explore alternatives |
-| **BALANCED** | 30-60% | Direct answers, limited follow-ups |
-| **EFFICIENCY** | <30% | Prioritize delivery, make assumptions |
-| **TERMINAL** | Final turn | Deliver immediately, no questions |
+| **EXPLORATION** | >60% | Ask clarifying questions, explore options |
+| **BALANCED** | 30-60% | Narrow options, limit follow-up questions |
+| **EFFICIENCY** | <30% | Work toward a recommendation |
+| **TERMINAL** | Final turn | Call the completion tool immediately |
 
-`UrgencyAgentState` exposes `urgency_level`, `turns_used`, `turns_remaining`, and `is_terminal`.
-Three turn-counting modes are supported: pairs, human-only, and agent-only.
+`UrgencyAgentState` exposes `urgency_level`, `turns_used`, `turns_remaining`, and
+`completion_tool_called`. Three turn-counting modes are supported via `count_human_turns_only` and
+`count_agent_turns_only`.
 
-## Pattern 3: Phase-Based Steering
+## Pattern 3: Tool-Triggered Personalization
 
-**Problem:** Multi-step workflows (gather → analyze → recommend) lack structure — agents jump phases
-prematurely or get stuck in one phase indefinitely.
+**Problem:** Multi-step workflows lack structure — agents skip phases, stall indefinitely, or ignore
+per-phase tool constraints without reliable enforcement.
 
-**Solution:** Detect the current phase from state and tool usage, inject phase-appropriate
-`<system>` guidance on every model call, and enforce per-phase tool allowlists via `wrap_tool_call`.
+**Solution:** `PhaseSteeringMiddleware` detects phase transitions in `wrap_tool_call` (after a
+trigger tool executes) and injects phase-appropriate `<system>` guidance in `wrap_model_call`.
+Transitions are deterministic — no heuristics, no ambiguity.
 
 ```python
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langchain.tools import tool
-from bsm_examples.phase_steering.config import PhaseBehavior, PhaseConfig, PhaseTransition
-from bsm_examples.phase_steering.middleware import PhaseSteeringMiddleware
-from bsm_examples.phase_steering.phase import Phase
-from bsm_examples.phase_steering.state import PhaseAgentState
+from bsm_examples.phase_steering import (
+    Phase,
+    PhaseBehavior,
+    PhaseConfig,
+    PhaseTransitionRule,
+    PhaseSteeringMiddleware,
+    PhaseAgentState,
+)
 
 
 @tool
-def search(query: str) -> str:
-    """Search for information on a topic."""
-    ...
+def browse_catalog(category: str) -> str:
+    """Browse products in a catalog category."""
+    return f"Catalog for '{category}': [products]"
 
 
 @tool
-def compare(items: str) -> str:
-    """Compare multiple approaches. Pass comma-separated items."""
-    ...
+def note_preferences(preferences: str) -> str:
+    """Record the customer's stated preferences and requirements."""
+    return f"Preferences noted: {preferences}"
 
 
 @tool
-def synthesize(analysis: str) -> str:
-    """Synthesize analysis into actionable recommendations."""
-    ...
+def shortlist_items(items: str) -> str:
+    """Create a shortlist of top candidate products."""
+    return f"Shortlisted: {items}"
+
+
+@tool
+def present_recommendation(recommendation: str) -> str:
+    """Present the final product recommendation to the customer."""
+    return f"Final recommendation: {recommendation}"
 
 
 config = PhaseConfig(
     phases={
-        Phase.GATHER: PhaseBehavior(
-            system_prompt_addition="Collect information. Use search and fetch_document.",
-            allowed_tools=["search", "fetch_document"],
+        Phase.DISCOVERY: PhaseBehavior(
+            system_prompt_addition=(
+                "Ask questions to understand needs. Browse the catalog. "
+                "When ready, use note_preferences."
+            ),
+            allowed_tools=["browse_catalog", "note_preferences"],
             max_iterations=5,
         ),
-        Phase.ANALYZE: PhaseBehavior(
-            system_prompt_addition="Compare approaches and identify trade-offs.",
-            allowed_tools=["compare"],
-            max_iterations=3,
+        Phase.CURATION: PhaseBehavior(
+            system_prompt_addition=(
+                "Filter and compare products. When narrowed down, use shortlist_items."
+            ),
+            allowed_tools=["filter_products", "compare_options", "shortlist_items"],
+            max_iterations=5,
         ),
-        Phase.RECOMMEND: PhaseBehavior(
-            system_prompt_addition="Synthesize clear, actionable recommendations.",
-            allowed_tools=["synthesize"],
+        Phase.RECOMMENDATION: PhaseBehavior(
+            system_prompt_addition="Present your final recommendation.",
+            allowed_tools=["present_recommendation"],
             max_iterations=2,
         ),
         Phase.COMPLETE: PhaseBehavior(
-            system_prompt_addition="Present the final summary to the user.",
+            system_prompt_addition="Workflow complete.",
             allowed_tools=[],
             max_iterations=1,
         ),
     },
     transitions=[
-        PhaseTransition(from_phase=Phase.GATHER, to_phase=Phase.ANALYZE),
-        PhaseTransition(from_phase=Phase.ANALYZE, to_phase=Phase.RECOMMEND),
-        PhaseTransition(from_phase=Phase.RECOMMEND, to_phase=Phase.COMPLETE),
+        PhaseTransitionRule(
+            from_phase=Phase.DISCOVERY,
+            to_phase=Phase.CURATION,
+            trigger_tool="note_preferences",
+        ),
+        PhaseTransitionRule(
+            from_phase=Phase.CURATION,
+            to_phase=Phase.RECOMMENDATION,
+            trigger_tool="shortlist_items",
+        ),
+        PhaseTransitionRule(
+            from_phase=Phase.RECOMMENDATION,
+            to_phase=Phase.COMPLETE,
+            trigger_tool="present_recommendation",
+        ),
     ],
-    initial_phase=Phase.GATHER,
-    enable_auto_transition=True,
+    initial_phase=Phase.DISCOVERY,
 )
 middleware = PhaseSteeringMiddleware(config)
 
 agent = create_agent(
     model=ChatOpenAI(model="gpt-4.1-mini"),
-    tools=[search, compare, synthesize],
+    tools=[browse_catalog, note_preferences, shortlist_items, present_recommendation],
     system_prompt=(
-        "You are a research assistant. "
-        "You will receive <system> tags with phase guidance "
-        "— follow them and use only the tools specified."
+        "You are a personalization shopping assistant. "
+        "You will receive <system> tags with phase guidance — follow them and "
+        "use only the tools specified for the current phase."
     ),
     middleware=[middleware],
     state_schema=PhaseAgentState,
 )
 
-result = agent.invoke({"messages": messages})
+result = agent.invoke({"messages": conversation})
 current_phase = result.get("current_phase")
 phase_iteration = result.get("phase_iteration")
+total_iterations = result.get("total_iterations")
 ```
 
-**Phase detection priority:** explicit state field > tool usage patterns > state content > default.
+**Phase transitions:**
+
+| Trigger tool | From phase | To phase |
+|-------------|-----------|---------|
+| `note_preferences` | DISCOVERY | CURATION |
+| `shortlist_items` | CURATION | RECOMMENDATION |
+| `present_recommendation` | RECOMMENDATION | COMPLETE |
+
 `PhaseAgentState` exposes `current_phase`, `phase_iteration`, and `total_iterations`.
+Per-phase `allowed_tools` lists are enforced in `wrap_tool_call` — disallowed calls are blocked
+before they reach the underlying tool.
 
 ## Project Structure
 
@@ -256,23 +302,27 @@ python/behavior-steering-middleware/
 ├── README.md
 ├── src/bsm_examples/
 │   ├── __init__.py
-│   ├── drift_detection/
+│   ├── drift_detection/            # Worker Heartbeat Monitor
 │   │   ├── __init__.py
-│   │   ├── middleware.py    # DriftDetector + DriftSteeringMiddleware
-│   │   ├── state.py         # DriftAgentState
-│   │   └── demo.py          # Runnable demonstration (requires OPENAI_API_KEY)
-│   ├── turn_urgency/
+│   │   ├── models.py               # HeartbeatConfig
+│   │   ├── state.py                # HeartbeatAgentState
+│   │   ├── detector.py             # HeartbeatDetector
+│   │   ├── middleware.py           # HeartbeatMiddleware
+│   │   └── demo.py
+│   ├── turn_urgency/               # Shopping Recommendation Agent
 │   │   ├── __init__.py
-│   │   ├── middleware.py    # UrgencyCalculator + TurnUrgencyMiddleware
-│   │   ├── types.py         # TurnUrgencyConfig, UrgencyLevel, UrgencyAgentState
-│   │   └── demo.py          # Runnable demonstration (requires OPENAI_API_KEY)
-│   └── phase_steering/
+│   │   ├── models.py               # TurnUrgencyConfig, UrgencyLevel, UrgencyPrompts
+│   │   ├── state.py                # UrgencyAgentState
+│   │   ├── calculator.py           # UrgencyCalculator, UrgencyState
+│   │   ├── middleware.py           # TurnUrgencyMiddleware
+│   │   └── demo.py
+│   └── phase_steering/             # Tool-Triggered Personalization
 │       ├── __init__.py
-│       ├── middleware.py    # PhaseSteeringMiddleware
-│       ├── phase.py         # Phase enum
-│       ├── config.py        # PhaseConfig, PhaseBehavior, PhaseTransition
-│       ├── state.py         # PhaseState (Pydantic) + PhaseAgentState (TypedDict)
-│       └── demo.py          # Runnable demonstration (requires OPENAI_API_KEY)
+│       ├── models.py               # Phase, PhaseBehavior, PhaseTransitionRule, PhaseConfig
+│       ├── state.py                # PhaseAgentState
+│       ├── detector.py             # ToolTriggeredDetector
+│       ├── middleware.py           # PhaseSteeringMiddleware
+│       └── demo.py
 └── tests/
     ├── helpers.py
     ├── test_drift_detection.py
@@ -286,9 +336,9 @@ python/behavior-steering-middleware/
 
 - **Python:** 3.11+
 - **LangChain:** 1.2+ (required for `AgentMiddleware`, `ExtendedModelResponse`)
-- **LangGraph:** 1.0+ (modern `StateGraph` patterns)
+- **LangGraph:** 1.0+
 - **LangChain-OpenAI:** for `ChatOpenAI` in demos
-- **Pydantic:** 2.0+ (configuration and state models)
+- **Pydantic:** 2.0+
 
 ### Code Quality
 
@@ -308,26 +358,19 @@ poetry run pytest tests/ -v
 
 ### Design Principles
 
-1. **Middleware pattern:** Each example extends `AgentMiddleware` and hooks into `create_agent`
-   without modifying core agent or model logic.
+1. **Middleware pattern:** All three examples extend `AgentMiddleware` and integrate via
+   `create_agent` without modifying the underlying model or agent logic.
 2. **Static system prompt:** The system prompt declares that `<system>` tags will appear but is
    never mutated at runtime. All steering content is appended as separate messages.
 3. **Injection via `request.override`:** `wrap_model_call` appends `SystemMessage` objects with
    `<system>` tags to `request.messages` before the model call proceeds.
-4. **State observability:** Middleware writes diagnostics back to agent state via
-   `ExtendedModelResponse` + `Command(update={...})`, making drift scores, urgency levels, and
-   phase tracking accessible on every `agent.invoke` result.
-5. **Pydantic configuration:** Type-safe, validated configuration with sensible defaults across all
-   three patterns.
-
-## Further Reading
-
-These examples accompany a blog post on Agent Behavior-Steering Middleware patterns. Each pattern
-addresses a specific failure mode in LLM agent systems:
-
-- **Drift:** Silent degradation of tool usage over a conversation
-- **Urgency:** Mismatched agent behavior relative to remaining resource budget
-- **Phases:** Unstructured multi-step workflows that skip or stall in critical phases
+4. **Tool-triggered transitions:** Phase transitions fire in `wrap_tool_call` after the trigger
+   tool executes — no heuristics, no scoring, deterministic advancement.
+5. **State observability:** Middleware writes diagnostics back to agent state via
+   `ExtendedModelResponse` + `Command(update={...})`, making heartbeat counts, urgency levels,
+   and phase tracking accessible on every `agent.invoke` result.
+6. **Pydantic configuration:** Type-safe, validated configuration with sensible defaults across
+   all three patterns.
 
 ## License
 

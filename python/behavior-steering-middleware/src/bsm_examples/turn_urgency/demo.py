@@ -1,7 +1,8 @@
-"""Demonstration of Turn Urgency middleware with a real LLM.
+"""Demonstration of Turn Urgency middleware with a Shopping Recommendation Agent.
 
-Runs a 5-turn debugging conversation. The middleware injects progressively
-stricter urgency instructions into the system prompt as turns are consumed.
+Runs a 5-turn product recommendation conversation. The middleware injects
+progressively stricter urgency instructions as turns are consumed, ultimately
+forcing the agent to call `recommend_product` on the final turn.
 
 Requires OPENAI_API_KEY in the environment or a .env file.
 """
@@ -22,39 +23,63 @@ from langchain_openai import ChatOpenAI  # noqa: E402
 from bsm_examples.turn_urgency import (  # noqa: E402
     TurnUrgencyConfig,
     TurnUrgencyMiddleware,
+    UrgencyAgentState,
 )
-from bsm_examples.turn_urgency.types import UrgencyAgentState  # noqa: E402
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
 
 
 @tool
-def analyze_code(code_snippet: str) -> str:
-    """Analyze a code snippet for common issues like type errors, null references, etc."""
-    issues = []
-    if "None" in code_snippet or "null" in code_snippet:
-        issues.append("Potential null reference detected")
-    if ".process()" in code_snippet:
-        issues.append("Method call on potentially uninitialized object")
+def search_products(query: str, category: str = "all") -> str:
+    """Search for products matching a query in the catalog."""
     return (
-        f"Found {len(issues)} issue(s): {'; '.join(issues)}"
-        if issues
-        else "No issues detected"
+        f"Found products for '{query}' in {category}: "
+        "[SoundPro X1 ($79), AudioMax 500 ($149), BeatWave Pro ($229)]"
     )
 
 
+@tool
+def get_product_details(product_id: str) -> str:
+    """Get detailed information about a specific product."""
+    details = {
+        "soundpro-x1": (
+            "SoundPro X1 ($79): 20hr battery, basic noise cancellation, "
+            "Bluetooth 5.0. Best for: casual listeners on a budget."
+        ),
+        "audiomax-500": (
+            "AudioMax 500 ($149): 30hr battery, active noise cancellation, "
+            "Bluetooth 5.2, foldable. Best for: commuters and office use."
+        ),
+        "beatwave-pro": (
+            "BeatWave Pro ($229): 40hr battery, premium ANC, hi-fi audio, "
+            "multipoint pairing. Best for: audiophiles and frequent travelers."
+        ),
+    }
+    return details.get(product_id, f"Product '{product_id}' not found in catalog.")
+
+
+@tool
+def recommend_product(product_name: str, reason: str) -> str:
+    """Recommend a product to the customer with a reason."""
+    return f"Recommended '{product_name}': {reason}"
+
+
 def build_agent() -> object:
-    """Build the agent with TurnUrgencyMiddleware configured for 5 turns."""
-    config = TurnUrgencyConfig(max_turns=5)
+    """Build the shopping agent with TurnUrgencyMiddleware configured for 5 turns."""
+    config = TurnUrgencyConfig(
+        max_turns=5,
+        required_completion_tool="recommend_product",
+    )
     middleware = TurnUrgencyMiddleware(config)
     agent = create_agent(
         model=ChatOpenAI(model="gpt-4.1-mini"),
-        tools=[analyze_code],
+        tools=[search_products, get_product_details, recommend_product],
         system_prompt=(
-            "You are a Python debugging assistant. "
-            "Use the analyze_code tool when the user shares code. "
-            "You will receive <system> tags with behavioral guidance "
-            "— follow them."
+            "You are a helpful shopping assistant specializing in consumer electronics. "
+            "Help customers find the right product for their needs. "
+            "Use search_products to explore options, get_product_details for specifics, "
+            "and recommend_product when you are ready to make a suggestion. "
+            "You will receive <system> tags with behavioral guidance — follow them."
         ),
         middleware=[middleware],
         state_schema=UrgencyAgentState,
@@ -63,21 +88,21 @@ def build_agent() -> object:
 
 
 def run_demo() -> None:
-    """Run a 5-turn debugging session showing urgency escalation."""
+    """Run a 5-turn shopping session showing urgency escalation toward a recommendation."""
     print("=" * 70)
-    print("TURN URGENCY MIDDLEWARE DEMO")
-    print("Task: Debug a Python TypeError — 5-turn budget")
+    print("TURN URGENCY MIDDLEWARE DEMO — Shopping Recommendation Agent")
+    print("Task: Help customer find wireless headphones — 5-turn budget")
     print("=" * 70)
     print()
 
     agent = build_agent()
 
     turns = [
-        "My Python script crashes with a TypeError. How do I debug it?",
-        "The error is on line 42: 'NoneType' object has no attribute 'process'.",
-        "Here is the code: result = data.process()",
-        "I added the None check and that error is gone, but now there's an AttributeError.",
-        "What about adding logging so I can trace the issue next time?",
+        "Hi! I'm looking for wireless headphones. What do you have?",
+        "I mostly use them for commuting and working from home. What's my best option?",
+        "Can you tell me more about the AudioMax 500?",
+        "That sounds good. My budget is around $150. Does it fit?",
+        "Okay, I think I've heard enough. What do you recommend?",
     ]
 
     messages: list[HumanMessage] = []
@@ -92,12 +117,14 @@ def run_demo() -> None:
         urgency_level = result.get("urgency_level", "UNKNOWN")
         turns_used = result.get("turns_used", i)
         turns_remaining = result.get("turns_remaining", 5 - i)
+        completion_tool_called = result.get("completion_tool_called", False)
 
         last_message = result["messages"][-1]
-        print(f"Agent: {last_message.content[:200]}")
+        print(f"Agent: {last_message.content[:300]}")
         print(
-            f"  urgency_level={urgency_level}  "
-            f"turns_used={turns_used}  turns_remaining={turns_remaining}"
+            f"  urgency={urgency_level}  "
+            f"turns={turns_used}/{5}  remaining={turns_remaining}  "
+            f"recommend_called={completion_tool_called}"
         )
         print()
 

@@ -1,530 +1,535 @@
-"""Unit tests for Phase-Based Steering middleware.
+"""Unit tests for the Tool-Triggered Phase Steering middleware.
 
-This module provides comprehensive tests for all components of the
-phase-based steering pattern.
+Full rewrite covering models, detector, middleware, and integration scenarios.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from tests.helpers import make_mock_handler, make_mock_request
+from tests.helpers import (
+    make_mock_handler,
+    make_mock_request,
+    make_mock_tool_handler,
+    make_mock_tool_request,
+)
 
-if TYPE_CHECKING:
-    from bsm_examples.phase_steering.config import PhaseConfig
-    from bsm_examples.phase_steering.state import PhaseState
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_config(*, include_all_phases: bool = True):
+    """Build a minimal PhaseConfig for use in tests."""
+    from bsm_examples.phase_steering.models import (
+        Phase,
+        PhaseBehavior,
+        PhaseConfig,
+        PhaseTransitionRule,
+    )
+
+    phases = {
+        Phase.DISCOVERY: PhaseBehavior(
+            system_prompt_addition="Discover customer needs.",
+            allowed_tools=["browse_catalog", "note_preferences"],
+            max_iterations=5,
+        ),
+        Phase.CURATION: PhaseBehavior(
+            system_prompt_addition="Curate product options.",
+            allowed_tools=["filter_products", "shortlist_items"],
+            max_iterations=5,
+        ),
+    }
+
+    if include_all_phases:
+        phases[Phase.RECOMMENDATION] = PhaseBehavior(
+            system_prompt_addition="Present recommendation.",
+            allowed_tools=["present_recommendation"],
+            max_iterations=2,
+        )
+        phases[Phase.COMPLETE] = PhaseBehavior(
+            system_prompt_addition="Workflow complete.",
+            allowed_tools=[],
+            max_iterations=1,
+        )
+
+    transitions = [
+        PhaseTransitionRule(
+            from_phase=Phase.DISCOVERY,
+            to_phase=Phase.CURATION,
+            trigger_tool="note_preferences",
+        ),
+        PhaseTransitionRule(
+            from_phase=Phase.CURATION,
+            to_phase=Phase.RECOMMENDATION,
+            trigger_tool="shortlist_items",
+        ),
+        PhaseTransitionRule(
+            from_phase=Phase.RECOMMENDATION,
+            to_phase=Phase.COMPLETE,
+            trigger_tool="present_recommendation",
+        ),
+    ]
+
+    return PhaseConfig(
+        phases=phases,
+        transitions=transitions,
+        initial_phase=Phase.DISCOVERY,
+    )
+
+
+# ---------------------------------------------------------------------------
+# TestPhase
+# ---------------------------------------------------------------------------
 
 
 class TestPhase:
     """Tests for the Phase enum."""
 
-    def test_phase_values(self) -> None:
-        """Test that all expected phases exist."""
-        from bsm_examples.phase_steering.phase import Phase
+    def test_all_phases_exist(self) -> None:
+        """DISCOVERY, CURATION, RECOMMENDATION, and COMPLETE must all be defined."""
+        from bsm_examples.phase_steering.models import Phase
 
-        assert Phase.GATHER is not None
-        assert Phase.ANALYZE is not None
-        assert Phase.RECOMMEND is not None
+        assert Phase.DISCOVERY is not None
+        assert Phase.CURATION is not None
+        assert Phase.RECOMMENDATION is not None
         assert Phase.COMPLETE is not None
 
-    def test_phase_order(self) -> None:
-        """Test phase ordering is correct."""
-        from bsm_examples.phase_steering.phase import Phase
+    def test_phase_ordering(self) -> None:
+        """Phases should have ascending order values."""
+        from bsm_examples.phase_steering.models import Phase
 
-        assert Phase.GATHER.order == 0
-        assert Phase.ANALYZE.order == 1
-        assert Phase.RECOMMEND.order == 2
+        assert Phase.DISCOVERY.order == 0
+        assert Phase.CURATION.order == 1
+        assert Phase.RECOMMENDATION.order == 2
         assert Phase.COMPLETE.order == 3
 
-    def test_phase_display_names(self) -> None:
-        """Test display names are properly formatted."""
-        from bsm_examples.phase_steering.phase import Phase
+    def test_display_name(self) -> None:
+        """display_name should be title-cased."""
+        from bsm_examples.phase_steering.models import Phase
 
-        assert Phase.GATHER.display_name == "Gather"
-        assert Phase.ANALYZE.display_name == "Analyze"
-        assert Phase.RECOMMEND.display_name == "Recommend"
+        assert Phase.DISCOVERY.display_name == "Discovery"
+        assert Phase.CURATION.display_name == "Curation"
+        assert Phase.RECOMMENDATION.display_name == "Recommendation"
         assert Phase.COMPLETE.display_name == "Complete"
 
-    def test_phase_from_string_valid(self) -> None:
-        """Test parsing phase from valid strings."""
-        from bsm_examples.phase_steering.phase import Phase
+    def test_from_string_valid(self) -> None:
+        """from_string should parse valid names case-insensitively."""
+        from bsm_examples.phase_steering.models import Phase
 
-        assert Phase.from_string("GATHER") == Phase.GATHER
-        assert Phase.from_string("gather") == Phase.GATHER
-        assert Phase.from_string("Analyze") == Phase.ANALYZE
+        assert Phase.from_string("DISCOVERY") == Phase.DISCOVERY
+        assert Phase.from_string("discovery") == Phase.DISCOVERY
+        assert Phase.from_string("Curation") == Phase.CURATION
+        assert Phase.from_string("COMPLETE") == Phase.COMPLETE
 
-    def test_phase_from_string_invalid(self) -> None:
-        """Test parsing phase from invalid string raises error."""
-        from bsm_examples.phase_steering.phase import Phase
+    def test_from_string_invalid(self) -> None:
+        """from_string should raise ValueError for unknown names."""
+        from bsm_examples.phase_steering.models import Phase
 
         with pytest.raises(ValueError, match="Unknown phase"):
-            Phase.from_string("INVALID")
+            Phase.from_string("GATHER")
+
+        with pytest.raises(ValueError, match="Unknown phase"):
+            Phase.from_string("INVALID_PHASE")
+
+
+# ---------------------------------------------------------------------------
+# TestPhaseBehavior
+# ---------------------------------------------------------------------------
 
 
 class TestPhaseBehavior:
-    """Tests for PhaseBehavior model."""
+    """Tests for the PhaseBehavior model."""
 
     def test_basic_creation(self) -> None:
-        """Test creating PhaseBehavior with required fields."""
-        from bsm_examples.phase_steering.config import PhaseBehavior
+        """Required field only — defaults should apply."""
+        from bsm_examples.phase_steering.models import PhaseBehavior
 
-        behavior = PhaseBehavior(system_prompt_addition="Test guidance")
-        assert behavior.system_prompt_addition == "Test guidance"
+        behavior = PhaseBehavior(system_prompt_addition="Do something.")
+        assert behavior.system_prompt_addition == "Do something."
         assert behavior.allowed_tools == []
+        assert behavior.completion_criteria == ""
         assert behavior.max_iterations == 10
 
     def test_full_creation(self) -> None:
-        """Test creating PhaseBehavior with all fields."""
-        from bsm_examples.phase_steering.config import PhaseBehavior
+        """All fields should round-trip correctly."""
+        from bsm_examples.phase_steering.models import PhaseBehavior
 
         behavior = PhaseBehavior(
-            system_prompt_addition="Focus on gathering data",
-            allowed_tools=["search", "fetch"],
-            completion_criteria="Collect 3 items",
+            system_prompt_addition="Browse the catalog.",
+            allowed_tools=["browse_catalog", "note_preferences"],
+            completion_criteria="Preferences captured",
             max_iterations=5,
         )
-        assert behavior.system_prompt_addition == "Focus on gathering data"
-        assert behavior.allowed_tools == ["search", "fetch"]
-        assert behavior.completion_criteria == "Collect 3 items"
+        assert behavior.allowed_tools == ["browse_catalog", "note_preferences"]
+        assert behavior.completion_criteria == "Preferences captured"
         assert behavior.max_iterations == 5
 
-    def test_max_iterations_validation(self) -> None:
-        """Test max_iterations validation constraints."""
-        from bsm_examples.phase_steering.config import PhaseBehavior
+    def test_max_iterations_lower_bound(self) -> None:
+        """max_iterations must be at least 1."""
+        from bsm_examples.phase_steering.models import PhaseBehavior
 
-        # Valid values
-        PhaseBehavior(system_prompt_addition="Test", max_iterations=1)
-        PhaseBehavior(system_prompt_addition="Test", max_iterations=50)
-
-        # Invalid values
         with pytest.raises(ValueError):
-            PhaseBehavior(system_prompt_addition="Test", max_iterations=0)
+            PhaseBehavior(system_prompt_addition="x", max_iterations=0)
+
+    def test_max_iterations_upper_bound(self) -> None:
+        """max_iterations must not exceed 50."""
+        from bsm_examples.phase_steering.models import PhaseBehavior
+
         with pytest.raises(ValueError):
-            PhaseBehavior(system_prompt_addition="Test", max_iterations=51)
+            PhaseBehavior(system_prompt_addition="x", max_iterations=51)
+
+    def test_max_iterations_boundary_values_valid(self) -> None:
+        """Boundary values 1 and 50 should be accepted."""
+        from bsm_examples.phase_steering.models import PhaseBehavior
+
+        PhaseBehavior(system_prompt_addition="x", max_iterations=1)
+        PhaseBehavior(system_prompt_addition="x", max_iterations=50)
 
 
-class TestPhaseTransition:
-    """Tests for PhaseTransition model."""
+# ---------------------------------------------------------------------------
+# TestPhaseTransitionRule
+# ---------------------------------------------------------------------------
 
-    def test_creation(self) -> None:
-        """Test creating PhaseTransition."""
-        from bsm_examples.phase_steering.config import PhaseTransition
-        from bsm_examples.phase_steering.phase import Phase
 
-        transition = PhaseTransition(
-            from_phase=Phase.GATHER,
-            to_phase=Phase.ANALYZE,
-            condition_description="Data collected",
+class TestPhaseTransitionRule:
+    """Tests for the PhaseTransitionRule model."""
+
+    def test_creation_with_trigger_tool(self) -> None:
+        """Rule should store all fields correctly."""
+        from bsm_examples.phase_steering.models import Phase, PhaseTransitionRule
+
+        rule = PhaseTransitionRule(
+            from_phase=Phase.DISCOVERY,
+            to_phase=Phase.CURATION,
+            trigger_tool="note_preferences",
+            description="Customer needs documented",
         )
-        assert transition.from_phase == Phase.GATHER
-        assert transition.to_phase == Phase.ANALYZE
-        assert transition.condition_description == "Data collected"
-        assert transition.requires_tool_call is None
-        assert transition.requires_state_key is None
+        assert rule.from_phase == Phase.DISCOVERY
+        assert rule.to_phase == Phase.CURATION
+        assert rule.trigger_tool == "note_preferences"
+        assert rule.description == "Customer needs documented"
+
+    def test_creation_minimal(self) -> None:
+        """description is optional and defaults to empty string."""
+        from bsm_examples.phase_steering.models import Phase, PhaseTransitionRule
+
+        rule = PhaseTransitionRule(
+            from_phase=Phase.CURATION,
+            to_phase=Phase.RECOMMENDATION,
+            trigger_tool="shortlist_items",
+        )
+        assert rule.description == ""
+
+
+# ---------------------------------------------------------------------------
+# TestPhaseConfig
+# ---------------------------------------------------------------------------
 
 
 class TestPhaseConfig:
-    """Tests for PhaseConfig model."""
-
-    @pytest.fixture
-    def basic_config(self) -> PhaseConfig:
-        """Create a basic phase configuration for testing."""
-        from bsm_examples.phase_steering.config import PhaseBehavior, PhaseConfig
-        from bsm_examples.phase_steering.phase import Phase
-
-        return PhaseConfig(
-            phases={
-                Phase.GATHER: PhaseBehavior(
-                    system_prompt_addition="Gather data",
-                    max_iterations=5,
-                ),
-                Phase.ANALYZE: PhaseBehavior(
-                    system_prompt_addition="Analyze data",
-                    max_iterations=3,
-                ),
-            },
-        )
-
-    def test_default_initial_phase(self, basic_config: PhaseConfig) -> None:
-        """Test that default initial phase is GATHER."""
-        from bsm_examples.phase_steering.phase import Phase
-
-        assert basic_config.initial_phase == Phase.GATHER
+    """Tests for PhaseConfig validation and lookup methods."""
 
     def test_empty_phases_validation(self) -> None:
-        """Test that empty phases dict raises validation error."""
-        from bsm_examples.phase_steering.config import PhaseConfig
+        """PhaseConfig with no phases should raise a validation error."""
+        from bsm_examples.phase_steering.models import PhaseConfig
 
         with pytest.raises(ValueError, match="At least one phase"):
             PhaseConfig(phases={})
 
-    def test_get_allowed_transitions(self, basic_config: PhaseConfig) -> None:
-        """Test getting allowed transitions."""
-        from bsm_examples.phase_steering.config import PhaseTransition
-        from bsm_examples.phase_steering.phase import Phase
+    def test_get_transition_for_tool_matching(self) -> None:
+        """Should return the rule when phase and tool match."""
+        from bsm_examples.phase_steering.models import Phase
 
-        # Add transitions
-        basic_config.transitions = [
-            PhaseTransition(
-                from_phase=Phase.GATHER,
-                to_phase=Phase.ANALYZE,
-                condition_description="Done gathering",
-            ),
-        ]
+        config = _make_config()
+        rule = config.get_transition_for_tool(Phase.DISCOVERY, "note_preferences")
 
-        allowed = basic_config.get_allowed_transitions(Phase.GATHER)
-        assert Phase.ANALYZE in allowed
-        assert Phase.GATHER not in allowed
+        assert rule is not None
+        assert rule.to_phase == Phase.CURATION
+        assert rule.trigger_tool == "note_preferences"
 
-    def test_is_valid_transition(self, basic_config: PhaseConfig) -> None:
-        """Test checking if transition is valid."""
-        from bsm_examples.phase_steering.config import PhaseTransition
-        from bsm_examples.phase_steering.phase import Phase
+    def test_get_transition_for_tool_no_match(self) -> None:
+        """Should return None when the tool does not match any rule."""
+        from bsm_examples.phase_steering.models import Phase
 
-        basic_config.transitions = [
-            PhaseTransition(
-                from_phase=Phase.GATHER,
-                to_phase=Phase.ANALYZE,
-                condition_description="Done gathering",
-            ),
-        ]
+        config = _make_config()
+        result = config.get_transition_for_tool(Phase.DISCOVERY, "browse_catalog")
 
-        assert basic_config.is_valid_transition(Phase.GATHER, Phase.ANALYZE) is True
-        assert basic_config.is_valid_transition(Phase.ANALYZE, Phase.GATHER) is False
+        assert result is None
+
+    def test_get_transition_for_tool_wrong_phase(self) -> None:
+        """Should return None when the tool matches but the phase does not."""
+        from bsm_examples.phase_steering.models import Phase
+
+        config = _make_config()
+        # note_preferences triggers DISCOVERY -> CURATION, but we are in CURATION now
+        result = config.get_transition_for_tool(Phase.CURATION, "note_preferences")
+
+        assert result is None
 
 
-class TestPhaseState:
-    """Tests for PhaseState model."""
-
-    @pytest.fixture
-    def empty_state(self) -> PhaseState:
-        """Create an empty PhaseState for testing."""
-        from bsm_examples.phase_steering.state import PhaseState
-
-        return PhaseState()
-
-    def test_default_values(self, empty_state: PhaseState) -> None:
-        """Test default values of empty state."""
-        assert empty_state.current_phase is None
-        assert empty_state.phase_iterations == {}
-        assert empty_state.phase_history == []
-        assert empty_state.gathered_data == []
-        assert empty_state.analysis_notes == ""
-        assert empty_state.recommendations == []
-        assert empty_state.query == ""
-
-    def test_record_phase_entry(self, empty_state: PhaseState) -> None:
-        """Test recording phase entry."""
-        from bsm_examples.phase_steering.phase import Phase
-
-        empty_state.record_phase_entry(Phase.GATHER)
-        assert empty_state.current_phase == Phase.GATHER
-        assert empty_state.phase_iterations[Phase.GATHER] == 1
-
-        # Record another entry
-        empty_state.record_phase_entry(Phase.ANALYZE)
-        assert empty_state.current_phase == Phase.ANALYZE
-        assert Phase.GATHER in empty_state.phase_history
-        assert empty_state.phase_iterations[Phase.ANALYZE] == 1
-
-    def test_increment_iteration(self, empty_state: PhaseState) -> None:
-        """Test incrementing iteration count."""
-        from bsm_examples.phase_steering.phase import Phase
-
-        empty_state.current_phase = Phase.GATHER
-        empty_state.increment_iteration()
-        assert empty_state.phase_iterations[Phase.GATHER] == 1
-
-        empty_state.increment_iteration(Phase.GATHER)
-        assert empty_state.phase_iterations[Phase.GATHER] == 2
-
-    def test_add_gathered_data(self, empty_state: PhaseState) -> None:
-        """Test adding gathered data."""
-        data = {"source": "web", "content": "test"}
-        empty_state.add_gathered_data(data)
-        assert len(empty_state.gathered_data) == 1
-        assert empty_state.gathered_data[0] == data
-
-    def test_set_analysis(self, empty_state: PhaseState) -> None:
-        """Test setting analysis notes."""
-        notes = "Key findings: ..."
-        empty_state.set_analysis(notes)
-        assert empty_state.analysis_notes == notes
-
-    def test_add_recommendation(self, empty_state: PhaseState) -> None:
-        """Test adding recommendations."""
-        rec = "Use OAuth 2.0"
-        empty_state.add_recommendation(rec)
-        assert len(empty_state.recommendations) == 1
-        assert empty_state.recommendations[0] == rec
-
-    def test_is_phase_complete(self, empty_state: PhaseState) -> None:
-        """Test phase completion check."""
-        from bsm_examples.phase_steering.phase import Phase
-
-        empty_state.phase_iterations[Phase.GATHER] = 3
-        assert empty_state.is_phase_complete(Phase.GATHER, min_iterations=2) is True
-        assert empty_state.is_phase_complete(Phase.GATHER, min_iterations=5) is False
-
-    def test_total_iterations(self, empty_state: PhaseState) -> None:
-        """Test total iterations calculation."""
-        from bsm_examples.phase_steering.phase import Phase
-
-        empty_state.phase_iterations = {
-            Phase.GATHER: 3,
-            Phase.ANALYZE: 2,
-        }
-        assert empty_state.total_iterations == 5
+# ---------------------------------------------------------------------------
+# TestToolTriggeredDetector
+# ---------------------------------------------------------------------------
 
 
-class TestPhaseDetector:
-    """Tests for PhaseDetector implementations."""
+class TestToolTriggeredDetector:
+    """Tests for the ToolTriggeredDetector pure lookup class."""
 
-    @pytest.fixture
-    def config(self) -> PhaseConfig:
-        """Create a basic configuration for detector tests."""
-        from bsm_examples.phase_steering.config import PhaseBehavior, PhaseConfig
-        from bsm_examples.phase_steering.phase import Phase
+    def test_check_tool_transition_matching(self) -> None:
+        """Returns target phase when a rule matches."""
+        from bsm_examples.phase_steering.detector import ToolTriggeredDetector
+        from bsm_examples.phase_steering.models import Phase
 
-        return PhaseConfig(
-            phases={
-                Phase.GATHER: PhaseBehavior(
-                    system_prompt_addition="Gather",
-                    max_iterations=5,
-                ),
-                Phase.ANALYZE: PhaseBehavior(
-                    system_prompt_addition="Analyze",
-                    max_iterations=3,
-                ),
-                Phase.RECOMMEND: PhaseBehavior(
-                    system_prompt_addition="Recommend",
-                    max_iterations=2,
-                ),
-            },
-        )
+        config = _make_config()
+        detector = ToolTriggeredDetector(config)
 
-    @pytest.fixture
-    def detector(self, config: PhaseConfig):
-        """Create a DefaultPhaseDetector instance."""
-        from bsm_examples.phase_steering.detector import DefaultPhaseDetector
+        result = detector.check_tool_transition(Phase.DISCOVERY, "note_preferences")
 
-        return DefaultPhaseDetector(config)
+        assert result == Phase.CURATION
 
-    def test_detect_phase_from_state(self, detector, config: PhaseConfig) -> None:
-        """Test detecting phase from explicit state."""
-        from bsm_examples.phase_steering.phase import Phase
-        from bsm_examples.phase_steering.state import PhaseState
+    def test_check_tool_transition_no_match(self) -> None:
+        """Returns None when no rule matches for the given tool."""
+        from bsm_examples.phase_steering.detector import ToolTriggeredDetector
+        from bsm_examples.phase_steering.models import Phase
 
-        state = PhaseState(current_phase=Phase.ANALYZE)
-        detected = detector.detect_phase(state, [])
-        assert detected == Phase.ANALYZE
+        config = _make_config()
+        detector = ToolTriggeredDetector(config)
 
-    def test_detect_phase_from_tool_calls(self, detector, config: PhaseConfig) -> None:
-        """Test detecting phase from tool call patterns."""
-        from bsm_examples.phase_steering.phase import Phase
-        from bsm_examples.phase_steering.state import PhaseState
+        result = detector.check_tool_transition(Phase.DISCOVERY, "browse_catalog")
 
-        state = PhaseState()
-        tool_calls = [{"name": "search"}, {"name": "fetch"}]
-        detected = detector.detect_phase(state, [], tool_calls)
-        assert detected == Phase.GATHER
+        assert result is None
 
-        tool_calls = [{"name": "compare"}, {"name": "evaluate"}]
-        detected = detector.detect_phase(state, [], tool_calls)
-        assert detected == Phase.ANALYZE
+    def test_check_tool_transition_curation_to_recommendation(self) -> None:
+        """Returns RECOMMENDATION when shortlist_items is called in CURATION."""
+        from bsm_examples.phase_steering.detector import ToolTriggeredDetector
+        from bsm_examples.phase_steering.models import Phase
 
-        tool_calls = [{"name": "synthesize"}]
-        detected = detector.detect_phase(state, [], tool_calls)
-        assert detected == Phase.RECOMMEND
+        config = _make_config()
+        detector = ToolTriggeredDetector(config)
 
-    def test_detect_phase_from_state_content(self, detector, config: PhaseConfig) -> None:
-        """Test detecting phase from state content."""
-        from bsm_examples.phase_steering.phase import Phase
-        from bsm_examples.phase_steering.state import PhaseState
+        result = detector.check_tool_transition(Phase.CURATION, "shortlist_items")
 
-        # Recommendations present
-        state = PhaseState(recommendations=["Use OAuth"])
-        detected = detector.detect_phase(state, [])
-        assert detected == Phase.RECOMMEND
+        assert result == Phase.RECOMMENDATION
 
-        # Analysis notes present
-        state = PhaseState(analysis_notes="Some analysis here")
-        detected = detector.detect_phase(state, [])
-        assert detected == Phase.ANALYZE
 
-        # Gathered data present
-        state = PhaseState(gathered_data=[{"test": "data"}])
-        detected = detector.detect_phase(state, [])
-        assert detected == Phase.GATHER
-
-    def test_should_transition_iteration_limit(self, detector, config: PhaseConfig) -> None:
-        """Test transition detection based on iteration limit."""
-        from bsm_examples.phase_steering.phase import Phase
-        from bsm_examples.phase_steering.state import PhaseState
-
-        state = PhaseState(phase_iterations={Phase.GATHER: 5})
-        should_transition, target = detector.should_transition(Phase.GATHER, state, [])
-
-        assert should_transition is True
-        assert target == Phase.ANALYZE
-
-    def test_should_transition_signal_in_message(self, detector, config: PhaseConfig) -> None:
-        """Test transition detection from message content."""
-        from bsm_examples.phase_steering.phase import Phase
-        from bsm_examples.phase_steering.state import PhaseState
-
-        state = PhaseState()
-        messages = [HumanMessage(content="I'm ready to analyze the data now")]
-
-        should_transition, target = detector.should_transition(Phase.GATHER, state, messages)
-        assert should_transition is True
-        assert target == Phase.ANALYZE
-
-    def test_should_not_transition(self, detector, config: PhaseConfig) -> None:
-        """Test when transition should not occur."""
-        from bsm_examples.phase_steering.phase import Phase
-        from bsm_examples.phase_steering.state import PhaseState
-
-        state = PhaseState(phase_iterations={Phase.GATHER: 1})
-        should_transition, target = detector.should_transition(Phase.GATHER, state, [])
-
-        assert should_transition is False
-        assert target is None
+# ---------------------------------------------------------------------------
+# TestPhaseSteeringMiddleware
+# ---------------------------------------------------------------------------
 
 
 class TestPhaseSteeringMiddleware:
-    """Tests for PhaseSteeringMiddleware."""
+    """Tests for PhaseSteeringMiddleware wrap hooks and state management."""
 
     @pytest.fixture
     def middleware(self):
-        """Create a PhaseSteeringMiddleware instance."""
-        from bsm_examples.phase_steering.config import PhaseBehavior, PhaseConfig
+        """Fresh middleware instance starting in DISCOVERY."""
         from bsm_examples.phase_steering.middleware import PhaseSteeringMiddleware
-        from bsm_examples.phase_steering.phase import Phase
 
-        config = PhaseConfig(
-            phases={
-                Phase.GATHER: PhaseBehavior(
-                    system_prompt_addition="Focus on gathering data",
-                    allowed_tools=["search"],
-                    max_iterations=5,
-                ),
-                Phase.ANALYZE: PhaseBehavior(
-                    system_prompt_addition="Analyze the data",
-                    allowed_tools=["compare"],
-                    max_iterations=3,
-                ),
-            },
-        )
-        return PhaseSteeringMiddleware(config)
+        return PhaseSteeringMiddleware(_make_config())
 
     def test_initial_state(self, middleware) -> None:
-        """Test middleware initial state."""
-        from bsm_examples.phase_steering.phase import Phase
+        """Middleware should start in DISCOVERY with no history."""
+        from bsm_examples.phase_steering.models import Phase
 
-        assert middleware.current_phase == Phase.GATHER
+        assert middleware.current_phase == Phase.DISCOVERY
         assert middleware.phase_history == []
 
-    def test_process_request_injects_guidance(self, middleware) -> None:
-        """Test that wrap_model_call appends <system>-tagged phase guidance."""
-        request = make_mock_request(messages=[HumanMessage(content="Test")])
+    def test_wrap_model_call_injects_guidance(self, middleware) -> None:
+        """wrap_model_call must append a SystemMessage with phase tag."""
+        request = make_mock_request(messages=[HumanMessage(content="Hello")])
         handler = make_mock_handler()
 
         middleware.wrap_model_call(request, handler)
 
         request.override.assert_called_once()
-        call_kwargs = request.override.call_args.kwargs
-        injected_messages = call_kwargs["messages"]
-        steering_msg = injected_messages[-1]
-        assert isinstance(steering_msg, SystemMessage)
-        assert isinstance(steering_msg.content, str)
-        assert "<system>" in steering_msg.content
-        assert "[PHASE: Gather]" in steering_msg.content
-        assert "Focus on gathering data" in steering_msg.content
+        injected_messages = request.override.call_args.kwargs["messages"]
+        last = injected_messages[-1]
+        assert isinstance(last, SystemMessage)
+        assert "<system>" in last.content
+        assert "[PHASE: Discovery]" in last.content
+        assert "Discover customer needs" in last.content
 
-    def test_process_request_preserves_existing_messages(
-        self, middleware
-    ) -> None:
-        """Test that original messages are preserved with guidance appended."""
-        original_msg = HumanMessage(content="Test message")
-        request = make_mock_request(messages=[original_msg])
-        handler = make_mock_handler()
+    def test_wrap_model_call_increments_iterations(self, middleware) -> None:
+        """Each wrap_model_call should increment the total iteration counter."""
+        request = make_mock_request(messages=[HumanMessage(content="Hello")])
 
-        middleware.wrap_model_call(request, handler)
+        middleware.wrap_model_call(request, make_mock_handler())
+        assert middleware._total_iterations == 1
 
-        request.override.assert_called_once()
-        call_kwargs = request.override.call_args.kwargs
-        injected_messages = call_kwargs["messages"]
-        assert len(injected_messages) == 2
-        assert injected_messages[0] is original_msg
-        assert isinstance(injected_messages[-1], SystemMessage)
-        assert "<system>" in injected_messages[-1].content
+        middleware.wrap_model_call(request, make_mock_handler())
+        assert middleware._total_iterations == 2
+
+    def test_wrap_tool_call_allows_permitted_tool(self, middleware) -> None:
+        """browse_catalog is allowed in DISCOVERY — handler should be called."""
+        from langchain_core.messages import ToolMessage
+
+        tool_request = make_mock_tool_request("browse_catalog")
+        handler = make_mock_tool_handler(content="catalog results", tool_call_id="test_id")
+
+        result = middleware.wrap_tool_call(tool_request, handler)
+
+        handler.assert_called_once_with(tool_request)
+        assert isinstance(result, ToolMessage)
+
+    def test_wrap_tool_call_blocks_unpermitted_tool(self, middleware) -> None:
+        """filter_products is not in DISCOVERY's allow-list — should return error ToolMessage."""
+        from langchain_core.messages import ToolMessage
+
+        tool_request = make_mock_tool_request("filter_products", tool_call_id="blocked_id")
+        handler = make_mock_tool_handler()
+
+        result = middleware.wrap_tool_call(tool_request, handler)
+
+        handler.assert_not_called()
+        assert isinstance(result, ToolMessage)
+        assert "not available" in result.content
+        assert "filter_products" in result.content
+        assert "Discovery" in result.content
+
+    def test_wrap_tool_call_triggers_transition(self, middleware) -> None:
+        """Calling note_preferences in DISCOVERY should transition to CURATION."""
+        from bsm_examples.phase_steering.models import Phase
+
+        tool_request = make_mock_tool_request("note_preferences", tool_call_id="pref_id")
+        handler = make_mock_tool_handler(content="Preferences noted", tool_call_id="pref_id")
+
+        middleware.wrap_tool_call(tool_request, handler)
+
+        assert middleware.current_phase == Phase.CURATION
+
+    def test_wrap_tool_call_records_history_on_transition(self, middleware) -> None:
+        """Phase history should record the phase that was left on transition."""
+        from bsm_examples.phase_steering.models import Phase
+
+        tool_request = make_mock_tool_request("note_preferences", tool_call_id="pref_id")
+        handler = make_mock_tool_handler(content="ok", tool_call_id="pref_id")
+
+        middleware.wrap_tool_call(tool_request, handler)
+
+        assert len(middleware.phase_history) == 1
+        phase_left, _ = middleware.phase_history[0]
+        assert phase_left == Phase.DISCOVERY
+
+    def test_wrap_tool_call_no_transition_for_non_trigger(self, middleware) -> None:
+        """browse_catalog should not trigger any transition in DISCOVERY."""
+        from bsm_examples.phase_steering.models import Phase
+
+        tool_request = make_mock_tool_request("browse_catalog", tool_call_id="cat_id")
+        handler = make_mock_tool_handler(content="catalog", tool_call_id="cat_id")
+
+        middleware.wrap_tool_call(tool_request, handler)
+
+        assert middleware.current_phase == Phase.DISCOVERY
+        assert middleware.phase_history == []
 
     def test_reset(self, middleware) -> None:
-        """Test middleware reset functionality."""
-        from bsm_examples.phase_steering.phase import Phase
+        """reset() should restore middleware to its initial state."""
+        from bsm_examples.phase_steering.models import Phase
 
-        # Make a call to advance internal iteration counters
-        request = make_mock_request(messages=[HumanMessage(content="Test")])
-        middleware.wrap_model_call(request, make_mock_handler())
+        # Drive a transition to CURATION
+        tool_request = make_mock_tool_request("note_preferences", tool_call_id="x")
+        handler = make_mock_tool_handler(content="ok", tool_call_id="x")
+        middleware.wrap_tool_call(tool_request, handler)
 
-        # Reset
+        assert middleware.current_phase == Phase.CURATION
+
         middleware.reset()
 
-        # State should be cleared
-        assert middleware.current_phase == Phase.GATHER
+        assert middleware.current_phase == Phase.DISCOVERY
         assert middleware.phase_history == []
+        assert middleware._total_iterations == 0
+        assert middleware._phase_iterations == {}
 
-    def test_should_continue(self, middleware) -> None:
-        """Test should_continue method."""
-        from bsm_examples.phase_steering.phase import Phase
-        from bsm_examples.phase_steering.state import PhaseState
-
-        # Not complete
-        state = PhaseState(current_phase=Phase.GATHER)
-        assert middleware.should_continue(state) is True
-
-        # Complete
-        state = PhaseState(current_phase=Phase.COMPLETE)
-        assert middleware.should_continue(state) is False
+    def test_phase_history_is_a_copy(self, middleware) -> None:
+        """phase_history should return a copy, not the internal list."""
+        h1 = middleware.phase_history
+        h2 = middleware.phase_history
+        assert h1 is not h2
 
 
-class TestDemo:
-    """Tests for demo functionality."""
+# ---------------------------------------------------------------------------
+# TestIntegration
+# ---------------------------------------------------------------------------
 
-    def test_create_research_config(self) -> None:
-        """Test that demo config is created correctly."""
-        from bsm_examples.phase_steering.demo import create_research_config
-        from bsm_examples.phase_steering.phase import Phase
 
-        config = create_research_config()
+class TestIntegration:
+    """End-to-end workflow tests covering the full DISCOVERY -> COMPLETE path."""
 
-        assert Phase.GATHER in config.phases
-        assert Phase.ANALYZE in config.phases
-        assert Phase.RECOMMEND in config.phases
-        assert Phase.COMPLETE in config.phases
+    def test_full_workflow_transitions(self) -> None:
+        """Full tool-triggered workflow should traverse all four phases in order."""
+        from bsm_examples.phase_steering.middleware import PhaseSteeringMiddleware
+        from bsm_examples.phase_steering.models import Phase
 
-        assert len(config.transitions) > 0
-        assert config.initial_phase == Phase.GATHER
+        config = _make_config()
+        middleware = PhaseSteeringMiddleware(config)
 
-    def test_mock_tools(self) -> None:
-        """Test demo tool functions return expected content."""
-        from bsm_examples.phase_steering.demo import compare, search, synthesize
+        # DISCOVERY phase — trigger with note_preferences
+        assert middleware.current_phase == Phase.DISCOVERY
 
-        # Test search returns a string mentioning the query
-        result = search.invoke({"query": "test query"})
-        assert isinstance(result, str)
-        assert "test query" in result
+        note_req = make_mock_tool_request("note_preferences", tool_call_id="t1")
+        note_handler = make_mock_tool_handler(content="ok", tool_call_id="t1")
+        middleware.wrap_tool_call(note_req, note_handler)
 
-        # Test compare returns a string mentioning the items
-        result = compare.invoke({"items": "a, b"})
-        assert isinstance(result, str)
-        assert "Comparison" in result
+        assert middleware.current_phase == Phase.CURATION
 
-        # Test synthesize returns a string with recommendations
-        result = synthesize.invoke({"analysis": "some analysis"})
-        assert isinstance(result, str)
-        assert "recommendation" in result.lower()
+        # CURATION phase — trigger with shortlist_items
+        shortlist_req = make_mock_tool_request("shortlist_items", tool_call_id="t2")
+        shortlist_handler = make_mock_tool_handler(content="ok", tool_call_id="t2")
+        middleware.wrap_tool_call(shortlist_req, shortlist_handler)
+
+        assert middleware.current_phase == Phase.RECOMMENDATION
+
+        # RECOMMENDATION phase — trigger with present_recommendation
+        rec_req = make_mock_tool_request("present_recommendation", tool_call_id="t3")
+        rec_handler = make_mock_tool_handler(content="ok", tool_call_id="t3")
+        middleware.wrap_tool_call(rec_req, rec_handler)
+
+        assert middleware.current_phase == Phase.COMPLETE
+
+        # History should record all three transitions
+        assert len(middleware.phase_history) == 3
+        phases_left = [p.name for p, _ in middleware.phase_history]
+        assert phases_left == ["DISCOVERY", "CURATION", "RECOMMENDATION"]
+
+    def test_model_call_reflects_current_phase_after_transition(self) -> None:
+        """After a tool-triggered transition, wrap_model_call should inject CURATION guidance."""
+        from bsm_examples.phase_steering.middleware import PhaseSteeringMiddleware
+
+        config = _make_config()
+        middleware = PhaseSteeringMiddleware(config)
+
+        # Trigger transition to CURATION
+        note_req = make_mock_tool_request("note_preferences", tool_call_id="x")
+        note_handler = make_mock_tool_handler(content="ok", tool_call_id="x")
+        middleware.wrap_tool_call(note_req, note_handler)
+
+        # Now wrap_model_call should inject CURATION guidance
+        request = make_mock_request(messages=[HumanMessage(content="Now curate.")])
+        handler = make_mock_handler()
+
+        middleware.wrap_model_call(request, handler)
+
+        injected_messages = request.override.call_args.kwargs["messages"]
+        last = injected_messages[-1]
+        assert "[PHASE: Curation]" in last.content
+        assert "Curate product options" in last.content
+
+    def test_blocked_tool_does_not_transition(self) -> None:
+        """A blocked (not-allowed) tool call must not trigger a phase transition."""
+        from bsm_examples.phase_steering.middleware import PhaseSteeringMiddleware
+        from bsm_examples.phase_steering.models import Phase
+
+        config = _make_config()
+        middleware = PhaseSteeringMiddleware(config)
+
+        # filter_products is NOT in DISCOVERY allow-list
+        tool_req = make_mock_tool_request("filter_products", tool_call_id="blocked")
+        handler = make_mock_tool_handler(content="should not run", tool_call_id="blocked")
+
+        middleware.wrap_tool_call(tool_req, handler)
+
+        # Phase must still be DISCOVERY
+        assert middleware.current_phase == Phase.DISCOVERY
+        handler.assert_not_called()

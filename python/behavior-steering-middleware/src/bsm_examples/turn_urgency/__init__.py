@@ -6,24 +6,21 @@ from exploratory to urgent as turns are consumed.
 
 Example:
     >>> from bsm_examples.turn_urgency import TurnUrgencyConfig, TurnUrgencyMiddleware
-    >>> config = TurnUrgencyConfig(max_turns=5)
+    >>> config = TurnUrgencyConfig(max_turns=5, required_completion_tool="recommend_product")
     >>> middleware = TurnUrgencyMiddleware(config)
 """
 
 from __future__ import annotations
 
-from bsm_examples.turn_urgency.middleware import (
-    TurnUrgencyMiddleware,
-    UrgencyCalculator,
-    UrgencyState,
-)
-from bsm_examples.turn_urgency.types import (
+from bsm_examples.turn_urgency.calculator import UrgencyCalculator, UrgencyState
+from bsm_examples.turn_urgency.middleware import TurnUrgencyMiddleware
+from bsm_examples.turn_urgency.models import (
     TurnUrgencyConfig,
-    UrgencyAgentState,
     UrgencyLevel,
     UrgencyPrompts,
     UrgencyThresholds,
 )
+from bsm_examples.turn_urgency.state import UrgencyAgentState
 
 __all__ = [
     "TurnUrgencyConfig",

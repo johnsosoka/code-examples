@@ -1,547 +1,421 @@
-"""Unit tests for behavior drift detection middleware.
+"""Tests for the Worker Heartbeat Monitor middleware (drift_detection package).
 
-This module provides comprehensive tests for:
-- ToolUsagePattern validation
-- DriftDetectionConfig validation
-- DriftDetector scoring algorithm
-- DriftSteeringMiddleware integration
+Covers:
+- HeartbeatConfig model validation
+- HeartbeatDetector logic (record_turn, should_intervene, cooldown, etc.)
+- HeartbeatMiddleware wrap_model_call integration
+- Full multi-turn scenario
 """
 
 from __future__ import annotations
 
 import pytest
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from bsm_examples.drift_detection.middleware import (
-    DriftDetectionConfig,
-    DriftDetector,
-    DriftSteeringMiddleware,
-    ToolUsagePattern,
-)
+from bsm_examples.drift_detection.detector import HeartbeatDetector
+from bsm_examples.drift_detection.middleware import HeartbeatMiddleware
+from bsm_examples.drift_detection.models import HeartbeatConfig
+from tests.helpers import make_mock_handler, make_mock_request
 
-
-class TestToolUsagePattern:
-    """Tests for ToolUsagePattern Pydantic model."""
-
-    def test_default_construction(self) -> None:
-        """Test that pattern can be created with defaults."""
-        pattern = ToolUsagePattern(name="test_pattern")
-        assert pattern.name == "test_pattern"
-        assert pattern.expected_tools == {}
-        assert pattern.required_tools == []
-        assert pattern.forbidden_tools == []
-
-    def test_full_construction(self) -> None:
-        """Test that pattern can be created with all fields."""
-        pattern = ToolUsagePattern(
-            name="calculator",
-            expected_tools={"calculate": 0.8, "convert": 0.2},
-            minimum_frequencies={"calculate": 0.5},
-            required_tools=["calculate"],
-            forbidden_tools=["dangerous_tool"],
-        )
-        assert pattern.name == "calculator"
-        assert pattern.expected_tools == {"calculate": 0.8, "convert": 0.2}
-        assert pattern.minimum_frequencies == {"calculate": 0.5}
-        assert pattern.required_tools == ["calculate"]
-        assert pattern.forbidden_tools == ["dangerous_tool"]
-
-    def test_frequency_validation(self) -> None:
-        """Test that invalid frequencies are rejected."""
-        with pytest.raises(ValueError, match="must be in \\[0.0, 1.0\\]"):
-            ToolUsagePattern(
-                name="test",
-                expected_tools={"tool": 1.5},  # Invalid: > 1.0
-            )
-
-    def test_negative_frequency_validation(self) -> None:
-        """Test that negative frequencies are rejected."""
-        with pytest.raises(ValueError, match="must be in \\[0.0, 1.0\\]"):
-            ToolUsagePattern(
-                name="test",
-                expected_tools={"tool": -0.1},  # Invalid: < 0.0
-            )
-
-    def test_get_expected_frequency(self) -> None:
-        """Test getting expected frequency for a tool."""
-        pattern = ToolUsagePattern(
-            name="test",
-            expected_tools={"tool_a": 0.5, "tool_b": 0.3},
-        )
-        assert pattern.get_expected_frequency("tool_a") == 0.5
-        assert pattern.get_expected_frequency("tool_b") == 0.3
-        assert pattern.get_expected_frequency("unknown") == 0.0
-
-    def test_get_minimum_frequency(self) -> None:
-        """Test getting minimum frequency for a tool."""
-        pattern = ToolUsagePattern(
-            name="test",
-            minimum_frequencies={"tool_a": 0.2},
-        )
-        assert pattern.get_minimum_frequency("tool_a") == 0.2
-        assert pattern.get_minimum_frequency("unknown") is None
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
-class TestDriftDetectionConfig:
-    """Tests for DriftDetectionConfig Pydantic model."""
+def _make_ai_with_tool(tool_name: str) -> AIMessage:
+    """Return an AIMessage containing a single tool call."""
+    return AIMessage(
+        content="",
+        tool_calls=[{"name": tool_name, "args": {}, "id": "tc_1", "type": "tool_call"}],
+    )
 
-    def test_default_construction(self) -> None:
-        """Test that config can be created with defaults."""
-        config = DriftDetectionConfig()
-        assert config.history_window_size == 10
-        assert config.recency_bias == 1.5
-        assert config.warning_threshold == 0.3
-        assert config.intervention_threshold == 0.6
-        assert config.max_interventions_per_conversation == 3
-        assert config.cooldown_turns == 2
-        assert config.include_statistics is True
 
-    def test_custom_construction(self) -> None:
-        """Test that config can be created with custom values."""
-        config = DriftDetectionConfig(
-            history_window_size=5,
-            recency_bias=2.0,
-            warning_threshold=0.4,
-            intervention_threshold=0.7,
-            max_interventions_per_conversation=5,
-            cooldown_turns=1,
-            include_statistics=False,
-        )
-        assert config.history_window_size == 5
-        assert config.recency_bias == 2.0
-        assert config.warning_threshold == 0.4
-        assert config.intervention_threshold == 0.7
-        assert config.max_interventions_per_conversation == 5
+def _make_ai_no_tool() -> AIMessage:
+    """Return an AIMessage with no tool calls."""
+    return AIMessage(content="I am still working on the task.")
+
+
+# ---------------------------------------------------------------------------
+# TestHeartbeatConfig
+# ---------------------------------------------------------------------------
+
+
+class TestHeartbeatConfig:
+    """Pydantic model validation for HeartbeatConfig."""
+
+    def test_default_values(self) -> None:
+        config = HeartbeatConfig(target_tool="send_message")
+        assert config.target_tool == "send_message"
+        assert config.max_silent_turns == 3
+        assert config.max_interventions == 3
         assert config.cooldown_turns == 1
-        assert config.include_statistics is False
+        assert "{turns_since}" in config.reminder_template
+        assert "{tool}" in config.reminder_template
 
-    def test_threshold_validation(self) -> None:
-        """Test that intervention threshold must be >= warning threshold."""
-        with pytest.raises(
-            ValueError, match="intervention_threshold .* must be >= warning_threshold"
-        ):
-            DriftDetectionConfig(
-                warning_threshold=0.7,
-                intervention_threshold=0.5,  # Invalid: less than warning
-            )
+    def test_custom_values(self) -> None:
+        config = HeartbeatConfig(
+            target_tool="ping",
+            max_silent_turns=5,
+            max_interventions=2,
+            cooldown_turns=3,
+        )
+        assert config.target_tool == "ping"
+        assert config.max_silent_turns == 5
+        assert config.max_interventions == 2
+        assert config.cooldown_turns == 3
 
-    def test_history_window_bounds(self) -> None:
-        """Test that history window size has bounds."""
-        with pytest.raises(ValueError):
-            DriftDetectionConfig(history_window_size=2)  # Below minimum
+    def test_max_silent_turns_lower_bound(self) -> None:
+        with pytest.raises(Exception):
+            HeartbeatConfig(target_tool="t", max_silent_turns=0)
 
-        with pytest.raises(ValueError):
-            DriftDetectionConfig(history_window_size=101)  # Above maximum
+    def test_max_silent_turns_upper_bound(self) -> None:
+        with pytest.raises(Exception):
+            HeartbeatConfig(target_tool="t", max_silent_turns=21)
 
-    def test_recency_bias_bounds(self) -> None:
-        """Test that recency bias has bounds."""
-        with pytest.raises(ValueError):
-            DriftDetectionConfig(recency_bias=0.05)  # Below minimum
+    def test_max_interventions_zero_allowed(self) -> None:
+        config = HeartbeatConfig(target_tool="t", max_interventions=0)
+        assert config.max_interventions == 0
 
-        with pytest.raises(ValueError):
-            DriftDetectionConfig(recency_bias=6.0)  # Above maximum
+    def test_max_interventions_upper_bound(self) -> None:
+        with pytest.raises(Exception):
+            HeartbeatConfig(target_tool="t", max_interventions=21)
+
+    def test_cooldown_zero_allowed(self) -> None:
+        config = HeartbeatConfig(target_tool="t", cooldown_turns=0)
+        assert config.cooldown_turns == 0
+
+    def test_cooldown_upper_bound(self) -> None:
+        with pytest.raises(Exception):
+            HeartbeatConfig(target_tool="t", cooldown_turns=11)
+
+    def test_template_formatting(self) -> None:
+        config = HeartbeatConfig(target_tool="send_message")
+        result = config.reminder_template.format(turns_since=4, tool="send_message")
+        assert "4" in result
+        assert "send_message" in result
 
 
-class TestDriftDetector:
-    """Tests for DriftDetector class."""
+# ---------------------------------------------------------------------------
+# TestHeartbeatDetector
+# ---------------------------------------------------------------------------
 
-    @pytest.fixture
-    def pattern(self) -> ToolUsagePattern:
-        """Create a test pattern."""
-        return ToolUsagePattern(
-            name="test",
-            expected_tools={"tool_a": 0.8, "tool_b": 0.2},
-            required_tools=["tool_a"],
-            minimum_frequencies={"tool_a": 0.5},
+
+class TestHeartbeatDetector:
+    """Unit tests for HeartbeatDetector logic."""
+
+    @pytest.fixture()
+    def config(self) -> HeartbeatConfig:
+        return HeartbeatConfig(
+            target_tool="send_message",
+            max_silent_turns=3,
+            max_interventions=3,
+            cooldown_turns=1,
         )
 
-    @pytest.fixture
-    def config(self) -> DriftDetectionConfig:
-        """Create a test config."""
-        return DriftDetectionConfig(
-            history_window_size=5,
-            intervention_threshold=0.6,
-        )
+    @pytest.fixture()
+    def detector(self, config: HeartbeatConfig) -> HeartbeatDetector:
+        return HeartbeatDetector(config)
 
-    def test_initial_state(
-        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
-    ) -> None:
-        """Test that detector starts with zero drift."""
-        detector = DriftDetector(pattern, config)
-        assert detector.calculate_drift_score() == 0.0
-        assert detector.turn_count == 0
+    def test_initial_state(self, detector: HeartbeatDetector, config: HeartbeatConfig) -> None:
+        assert detector.turns_since_target == 0
         assert detector.intervention_count == 0
+        # Starts at cooldown_turns so first eligible turn can fire immediately.
+        assert detector.turns_since_last_intervention == config.cooldown_turns
 
-    def test_record_tool_usage(
-        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    def test_record_turn_with_target_tool(self, detector: HeartbeatDetector) -> None:
+        """Using the target tool resets the silent-turn counter."""
+        # Increment the counter first so we can verify a reset.
+        detector.turns_since_target = 5
+        detector.record_turn([_make_ai_with_tool("send_message")])
+        assert detector.turns_since_target == 0
+
+    def test_record_turn_without_target_tool(self, detector: HeartbeatDetector) -> None:
+        """Not using the target tool increments the silent-turn counter."""
+        detector.record_turn([_make_ai_no_tool()])
+        assert detector.turns_since_target == 1
+        detector.record_turn([_make_ai_no_tool()])
+        assert detector.turns_since_target == 2
+
+    def test_record_turn_other_tool_counts_as_silent(
+        self, detector: HeartbeatDetector
     ) -> None:
-        """Test recording tool usage from messages."""
-        detector = DriftDetector(pattern, config)
+        """Calling a different tool does not reset the heartbeat counter."""
+        detector.record_turn([_make_ai_with_tool("do_research")])
+        assert detector.turns_since_target == 1
 
-        # Create a message with a tool call
-        ai_msg = AIMessage(
-            content="",
-            tool_calls=[{"name": "tool_a", "args": {}, "id": "call_1"}],
-        )
-
-        detector.record_turn([ai_msg])
-        assert detector.turn_count == 1
-        assert len(detector.history) == 1
-
-    def test_drift_score_with_no_tools(
-        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    def test_record_turn_increments_cooldown_counter(
+        self, detector: HeartbeatDetector
     ) -> None:
-        """Test drift score when no tools are used."""
-        detector = DriftDetector(pattern, config)
+        initial = detector.turns_since_last_intervention
+        detector.record_turn([_make_ai_no_tool()])
+        assert detector.turns_since_last_intervention == initial + 1
 
-        # Record several turns with no tool calls
-        for _ in range(5):
-            ai_msg = AIMessage(content="Direct response")
-            detector.record_turn([ai_msg])
-
-        # Should have high drift since expected tools aren't being used
-        drift = detector.calculate_drift_score()
-        assert drift > 0.5  # Should be significant drift
-
-    def test_drift_score_with_correct_usage(
-        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    def test_should_intervene_after_threshold(
+        self, detector: HeartbeatDetector, config: HeartbeatConfig
     ) -> None:
-        """Test drift score with correct tool usage."""
-        # Create a pattern that only expects tool_a
-        single_tool_pattern = ToolUsagePattern(
-            name="single_tool",
-            expected_tools={"tool_a": 0.8},
-            required_tools=["tool_a"],
-        )
-        detector = DriftDetector(single_tool_pattern, config)
+        """should_intervene returns True once silent turns >= max_silent_turns."""
+        for _ in range(config.max_silent_turns):
+            detector.record_turn([_make_ai_no_tool()])
+        assert detector.should_intervene()
 
-        # Record several turns with correct tool calls
-        for i in range(5):
-            ai_msg = AIMessage(
-                content="",
-                tool_calls=[{"name": "tool_a", "args": {}, "id": f"call_{i}"}],
-            )
-            detector.record_turn([ai_msg])
-
-        # Should have low drift
-        drift = detector.calculate_drift_score()
-        assert drift < 0.3  # Should be minimal drift
-
-    def test_forbidden_tool_detection(
-        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    def test_should_not_intervene_before_threshold(
+        self, detector: HeartbeatDetector, config: HeartbeatConfig
     ) -> None:
-        """Test that forbidden tools trigger max drift."""
-        pattern_with_forbidden = ToolUsagePattern(
-            name="test",
-            expected_tools={"tool_a": 0.8},
-            forbidden_tools=["forbidden"],
-        )
-        detector = DriftDetector(pattern_with_forbidden, config)
-
-        # Record a turn with a forbidden tool
-        ai_msg = AIMessage(
-            content="",
-            tool_calls=[{"name": "forbidden", "args": {}, "id": "call_1"}],
-        )
-        detector.record_turn([ai_msg])
-
-        # Should have maximum drift
-        assert detector.calculate_drift_score() == 1.0
-
-    def test_required_tool_penalty(
-        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
-    ) -> None:
-        """Test penalty for missing required tools."""
-        detector = DriftDetector(pattern, config)
-
-        # Record several turns without the required tool
-        for i in range(5):
-            ai_msg = AIMessage(
-                content="",
-                tool_calls=[{"name": "tool_b", "args": {}, "id": f"call_{i}"}],  # Not required
-            )
-            detector.record_turn([ai_msg])
-
-        # Should have drift due to missing required tool
-        drift = detector.calculate_drift_score()
-        assert drift > 0.0
-
-    def test_intervention_threshold(
-        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
-    ) -> None:
-        """Test intervention decision logic."""
-        detector = DriftDetector(pattern, config)
-
-        # Initially should not intervene
+        """should_intervene is False when still below the silent-turn threshold."""
+        for _ in range(config.max_silent_turns - 1):
+            detector.record_turn([_make_ai_no_tool()])
         assert not detector.should_intervene()
 
-        # Record many turns without tools to trigger drift
-        for _ in range(10):
-            ai_msg = AIMessage(content="Direct response")
-            detector.record_turn([ai_msg])
-
-        # Now should intervene (if cooldown allows)
-        detector.turns_since_last_intervention = config.cooldown_turns
-        if detector.calculate_drift_score() >= config.intervention_threshold:
-            assert detector.should_intervene()
-
-    def test_intervention_cooldown(
-        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    def test_should_not_intervene_during_cooldown(
+        self, config: HeartbeatConfig
     ) -> None:
-        """Test that cooldown prevents rapid interventions."""
-        detector = DriftDetector(pattern, config)
-        detector.intervention_count = 1
-        detector.turns_since_last_intervention = 0  # Just intervened
+        """An intervention resets the cooldown; should_intervene returns False immediately."""
+        config = HeartbeatConfig(
+            target_tool="send_message",
+            max_silent_turns=1,
+            max_interventions=5,
+            cooldown_turns=2,
+        )
+        detector = HeartbeatDetector(config)
+        # Trigger threshold.
+        detector.record_turn([_make_ai_no_tool()])
+        assert detector.should_intervene()
 
-        # Should not intervene during cooldown
+        detector.record_intervention()
+        # Cooldown resets to 0; cooldown_turns is 2, so not ready yet.
         assert not detector.should_intervene()
 
-    def test_max_interventions(
-        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    def test_max_interventions_respected(
+        self, detector: HeartbeatDetector, config: HeartbeatConfig
     ) -> None:
-        """Test that max interventions limit is respected."""
-        detector = DriftDetector(pattern, config)
-        detector.intervention_count = config.max_interventions_per_conversation
-
-        # Should not intervene after max reached
+        """should_intervene returns False once max_interventions is exhausted."""
+        detector.intervention_count = config.max_interventions
+        detector.turns_since_target = config.max_silent_turns
         assert not detector.should_intervene()
 
-    def test_record_intervention(
-        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
-    ) -> None:
-        """Test recording an intervention."""
-        detector = DriftDetector(pattern, config)
+    def test_build_reminder(self, detector: HeartbeatDetector, config: HeartbeatConfig) -> None:
+        detector.turns_since_target = 4
+        reminder = detector.build_reminder()
+        assert "4" in reminder
+        assert config.target_tool in reminder
 
+    def test_record_intervention(self, detector: HeartbeatDetector) -> None:
         detector.record_intervention()
         assert detector.intervention_count == 1
         assert detector.turns_since_last_intervention == 0
 
-    def test_drift_report(
-        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
-    ) -> None:
-        """Test drift report generation."""
-        detector = DriftDetector(pattern, config)
+    def test_reset(self, detector: HeartbeatDetector, config: HeartbeatConfig) -> None:
+        detector.turns_since_target = 10
+        detector.intervention_count = 2
+        detector.turns_since_last_intervention = 0
 
-        # Record some activity
-        ai_msg = AIMessage(
-            content="",
-            tool_calls=[{"name": "tool_a", "args": {}, "id": "call_1"}],
-        )
-        detector.record_turn([ai_msg])
+        detector.reset()
 
-        report = detector.get_drift_report()
-        assert "turn_count" in report
-        assert "history_size" in report
-        assert "drift_score" in report
-        assert "intervention_count" in report
-        assert "tool_comparison" in report
-
-    def test_weighted_frequencies(
-        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
-    ) -> None:
-        """Test weighted frequency calculation."""
-        detector = DriftDetector(pattern, config)
-
-        # Record turns with different tools (tool_a in first 2, tool_b in last)
-        for i in range(3):
-            tool_name = "tool_a" if i < 2 else "tool_b"
-            ai_msg = AIMessage(
-                content="",
-                tool_calls=[{"name": tool_name, "args": {}, "id": f"call_{i}"}],
-            )
-            detector.record_turn([ai_msg])
-
-        freqs = detector._calculate_weighted_frequencies()
-        assert "tool_a" in freqs
-        assert "tool_b" in freqs
-        # With recency bias, tool_b (used in most recent turn) should have higher weight
-        # even though tool_a was used in 2/3 of turns
-        assert freqs["tool_b"] > freqs["tool_a"]
+        assert detector.turns_since_target == 0
+        assert detector.intervention_count == 0
+        assert detector.turns_since_last_intervention == config.cooldown_turns
 
 
-class TestDriftSteeringMiddleware:
-    """Tests for DriftSteeringMiddleware class."""
+# ---------------------------------------------------------------------------
+# TestHeartbeatMiddleware
+# ---------------------------------------------------------------------------
 
-    @pytest.fixture
-    def pattern(self) -> ToolUsagePattern:
-        """Create a test pattern."""
-        return ToolUsagePattern(
-            name="test",
-            expected_tools={"tool_a": 0.8},
-            required_tools=["tool_a"],
+
+class TestHeartbeatMiddleware:
+    """Integration tests for HeartbeatMiddleware.wrap_model_call."""
+
+    @pytest.fixture()
+    def config(self) -> HeartbeatConfig:
+        return HeartbeatConfig(
+            target_tool="send_message",
+            max_silent_turns=2,
+            max_interventions=3,
+            cooldown_turns=1,
         )
 
-    @pytest.fixture
-    def config(self) -> DriftDetectionConfig:
-        """Create a test config."""
-        return DriftDetectionConfig(
-            history_window_size=5,
-            intervention_threshold=0.6,
-        )
+    @pytest.fixture()
+    def middleware(self, config: HeartbeatConfig) -> HeartbeatMiddleware:
+        return HeartbeatMiddleware(config)
 
     def test_construction(
-        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+        self, middleware: HeartbeatMiddleware, config: HeartbeatConfig
     ) -> None:
-        """Test middleware construction."""
-        middleware = DriftSteeringMiddleware(pattern, config)
-        assert middleware.pattern == pattern
-        assert middleware.config == config
         assert middleware.detector is not None
+        assert middleware.detector.turns_since_target == 0
 
-    def test_construction_with_defaults(self, pattern: ToolUsagePattern) -> None:
-        """Test middleware construction with default config."""
-        middleware = DriftSteeringMiddleware(pattern)
-        assert middleware.config is not None
-        assert isinstance(middleware.config, DriftDetectionConfig)
+    def test_detector_property_exposed(self, middleware: HeartbeatMiddleware) -> None:
+        assert isinstance(middleware.detector, HeartbeatDetector)
 
-    def test_generate_reminder(
-        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    def test_wrap_model_call_no_injection_when_healthy(
+        self, middleware: HeartbeatMiddleware
     ) -> None:
-        """Test reminder generation."""
-        middleware = DriftSteeringMiddleware(pattern, config)
+        """No system message injected when the agent is within threshold."""
+        request = make_mock_request(messages=[HumanMessage(content="hi")])
+        handler = make_mock_handler()
 
-        # Record some turns to create drift context
-        for _ in range(3):
-            ai_msg = AIMessage(content="No tools used")
-            middleware.detector.record_turn([ai_msg])
+        middleware.wrap_model_call(request, handler)
 
-        reminder = middleware._generate_reminder()
-        assert "SYSTEM REMINDER" in reminder
-        assert "tool_a" in reminder
+        # override should not have been called with a <system> message
+        # (it may be called 0 times or with original messages only)
+        for call_args in request.override.call_args_list:
+            messages = call_args.kwargs.get("messages", [])
+            system_injected = any(
+                isinstance(m, SystemMessage) and "<system>" in (m.content or "")
+                for m in messages
+            )
+            assert not system_injected
 
-    def test_reset(
-        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    def test_wrap_model_call_injects_when_drifting(
+        self, middleware: HeartbeatMiddleware, config: HeartbeatConfig
     ) -> None:
-        """Test middleware reset."""
-        middleware = DriftSteeringMiddleware(pattern, config)
+        """A <system> reminder is injected once silent turns exceed threshold."""
+        # Simulate enough silent turns to cross the threshold.
+        for _ in range(config.max_silent_turns):
+            middleware.detector.record_turn([_make_ai_no_tool()])
 
-        # Record some activity
-        ai_msg = AIMessage(
-            content="",
-            tool_calls=[{"name": "tool_a", "args": {}, "id": "call_1"}],
-        )
-        middleware.detector.record_turn([ai_msg])
-        middleware.detector.record_intervention()
+        assert middleware.detector.should_intervene()
 
-        # Reset
+        request = make_mock_request(messages=[HumanMessage(content="continue")])
+        handler = make_mock_handler()
+
+        middleware.wrap_model_call(request, handler)
+
+        # override must have been called and the injected messages must contain
+        # a SystemMessage with <system> tags.
+        request.override.assert_called_once()
+        injected_messages = request.override.call_args.kwargs["messages"]
+        system_msgs = [
+            m
+            for m in injected_messages
+            if isinstance(m, SystemMessage) and "<system>" in (m.content or "")
+        ]
+        assert len(system_msgs) == 1
+
+    def test_wrap_model_call_records_turn(
+        self, middleware: HeartbeatMiddleware
+    ) -> None:
+        """record_turn is called on the response after each handler invocation."""
+        request = make_mock_request(messages=[HumanMessage(content="hi")])
+        response_msg = _make_ai_with_tool("send_message")
+        handler = make_mock_handler(response_messages=[response_msg])
+
+        middleware.wrap_model_call(request, handler)
+
+        # The target tool was in the response, so the counter should have reset.
+        assert middleware.detector.turns_since_target == 0
+
+    def test_wrap_model_call_returns_extended_response(
+        self, middleware: HeartbeatMiddleware
+    ) -> None:
+        """wrap_model_call returns an ExtendedModelResponse with state updates."""
+        from langchain.agents.middleware import ExtendedModelResponse
+
+        request = make_mock_request(messages=[HumanMessage(content="hi")])
+        handler = make_mock_handler()
+
+        result = middleware.wrap_model_call(request, handler)
+
+        assert isinstance(result, ExtendedModelResponse)
+
+    def test_reset_recreates_detector(self, middleware: HeartbeatMiddleware) -> None:
+        middleware.detector.turns_since_target = 7
+        middleware.detector.intervention_count = 2
         middleware.reset()
-
-        # Should be back to initial state
-        assert middleware.detector.turn_count == 0
+        assert middleware.detector.turns_since_target == 0
         assert middleware.detector.intervention_count == 0
-        assert len(middleware.detector.history) == 0
 
-    def test_get_drift_report(
-        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
-    ) -> None:
-        """Test getting drift report from middleware."""
-        middleware = DriftSteeringMiddleware(pattern, config)
 
-        report = middleware.get_drift_report()
-        assert "turn_count" in report
-        assert "drift_score" in report
+# ---------------------------------------------------------------------------
+# TestIntegration
+# ---------------------------------------------------------------------------
 
 
 class TestIntegration:
-    """Integration tests for the full drift detection flow."""
+    """End-to-end scenario: normal usage, drift, intervention, recovery."""
 
-    def test_full_drift_scenario(self) -> None:
-        """Test a complete drift detection and correction scenario."""
-        pattern = ToolUsagePattern(
-            name="calculator",
-            expected_tools={"calculate": 0.9},
-            required_tools=["calculate"],
-        )
-        config = DriftDetectionConfig(
-            history_window_size=5,
-            intervention_threshold=0.6,
+    def test_full_heartbeat_scenario(self) -> None:
+        config = HeartbeatConfig(
+            target_tool="send_message",
+            max_silent_turns=3,
+            max_interventions=2,
             cooldown_turns=1,
         )
-        detector = DriftDetector(pattern, config)
+        detector = HeartbeatDetector(config)
 
-        # Phase 1: Normal usage (low drift)
-        for i in range(3):
-            ai_msg = AIMessage(
-                content="",
-                tool_calls=[{"name": "calculate", "args": {}, "id": f"call_{i}"}],
-            )
-            detector.record_turn([ai_msg])
-
-        initial_drift = detector.calculate_drift_score()
-        assert initial_drift < 0.3  # Should be low
-
-        # Phase 2: Drift (no tool usage)
+        # Phase 1 — healthy usage: agent sends a status update each turn.
         for _ in range(3):
-            ai_msg = AIMessage(content="Direct answer")
-            detector.record_turn([ai_msg])
+            detector.record_turn([_make_ai_with_tool("send_message")])
 
-        drift_during = detector.calculate_drift_score()
-        assert drift_during > 0.5  # Should be higher
+        assert detector.turns_since_target == 0
+        assert not detector.should_intervene()
 
-        # Phase 3: Intervention should be needed
-        detector.turns_since_last_intervention = config.cooldown_turns
-        if drift_during >= config.intervention_threshold:
-            assert detector.should_intervene()
+        # Phase 2 — drift: agent stops sending updates.
+        for _ in range(3):
+            detector.record_turn([_make_ai_no_tool()])
 
-            # Record intervention
-            detector.record_intervention()
-            assert detector.intervention_count == 1
+        assert detector.turns_since_target == 3
+        assert detector.should_intervene()
 
-        # Phase 4: Recovery (resume tool usage)
-        for i in range(3):
-            ai_msg = AIMessage(
-                content="",
-                tool_calls=[{"name": "calculate", "args": {}, "id": f"call_{i+10}"}],
-            )
-            detector.record_turn([ai_msg])
+        # Phase 3 — first intervention.
+        reminder = detector.build_reminder()
+        assert "send_message" in reminder
+        detector.record_intervention()
+        assert detector.intervention_count == 1
+        assert detector.turns_since_last_intervention == 0
 
-        final_drift = detector.calculate_drift_score()
-        # Drift should decrease with proper tool usage
-        assert final_drift < drift_during
+        # Cooldown in effect immediately after intervention.
+        assert not detector.should_intervene()
 
-    def test_tool_message_detection(self) -> None:
-        """Test that tool messages are properly detected."""
-        pattern = ToolUsagePattern(
-            name="test",
-            expected_tools={"tool_a": 0.5},
+        # Phase 4 — agent keeps drifting for one more turn (cooldown resets).
+        detector.record_turn([_make_ai_no_tool()])
+        # turns_since_target is now 4 (still above threshold), cooldown elapsed.
+        assert detector.should_intervene()
+
+        # Phase 5 — recovery: agent sends a status update.
+        detector.record_turn([_make_ai_with_tool("send_message")])
+        assert detector.turns_since_target == 0
+        assert not detector.should_intervene()
+
+    def test_max_interventions_halts_reminders(self) -> None:
+        config = HeartbeatConfig(
+            target_tool="send_message",
+            max_silent_turns=1,
+            max_interventions=1,
+            cooldown_turns=0,
         )
-        config = DriftDetectionConfig()
-        detector = DriftDetector(pattern, config)
+        detector = HeartbeatDetector(config)
 
-        # Create a turn with tool call and response
-        ai_msg = AIMessage(
-            content="",
-            tool_calls=[{"name": "tool_a", "args": {}, "id": "call_1"}],
+        # Cross threshold.
+        detector.record_turn([_make_ai_no_tool()])
+        assert detector.should_intervene()
+
+        # Fire the single allowed intervention.
+        detector.record_intervention()
+
+        # Now max_interventions is exhausted — no more reminders.
+        detector.record_turn([_make_ai_no_tool()])
+        assert not detector.should_intervene()
+
+    def test_middleware_state_updates_flow_through(self) -> None:
+        """State fields are written into the ExtendedModelResponse command."""
+        from langchain.agents.middleware import ExtendedModelResponse
+
+        config = HeartbeatConfig(
+            target_tool="send_message",
+            max_silent_turns=10,  # High threshold so no intervention fires.
+            max_interventions=3,
+            cooldown_turns=1,
         )
-        tool_msg = ToolMessage(content="Result", tool_call_id="1")
+        middleware = HeartbeatMiddleware(config)
 
-        detector.record_turn([ai_msg, tool_msg])
+        request = make_mock_request(messages=[HumanMessage(content="go")])
+        handler = make_mock_handler(response_messages=[_make_ai_no_tool()])
 
-        # Should have recorded the tool call
-        assert detector.turn_count == 1
-        assert len(detector.history) == 1
+        result = middleware.wrap_model_call(request, handler)
 
-    def test_multiple_tool_calls(self) -> None:
-        """Test handling multiple tool calls in one turn."""
-        pattern = ToolUsagePattern(
-            name="test",
-            expected_tools={"tool_a": 0.5, "tool_b": 0.5},
-        )
-        config = DriftDetectionConfig()
-        detector = DriftDetector(pattern, config)
-
-        # Create a turn with multiple tool calls
-        ai_msg = AIMessage(
-            content="",
-            tool_calls=[
-                {"name": "tool_a", "args": {}, "id": "call_1"},
-                {"name": "tool_b", "args": {}, "id": "call_2"},
-            ],
-        )
-
-        detector.record_turn([ai_msg])
-
-        # Should have recorded both tool calls
-        record = detector.history[0]
-        assert "tool_a" in record.tools_called
-        assert "tool_b" in record.tools_called
+        assert isinstance(result, ExtendedModelResponse)
+        update = result.command.update  # type: ignore[union-attr]
+        assert "turns_since_heartbeat" in update
+        assert "intervention_count" in update
+        assert update["turns_since_heartbeat"] == 1
+        assert update["intervention_count"] == 0

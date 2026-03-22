@@ -1,69 +1,27 @@
-"""Phase-Based Steering middleware for LangGraph agents.
+"""Tool-Triggered Phase Steering middleware for LangGraph agents.
 
-This package provides a middleware implementation for guiding agent behavior
-through distinct workflow phases (GATHER, ANALYZE, RECOMMEND, COMPLETE).
+Guides agent behavior through DISCOVERY -> CURATION -> RECOMMENDATION -> COMPLETE
+phases where transitions are triggered by specific tool calls.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from .config import PhaseBehavior, PhaseConfig, PhaseTransition
-    from .detector import DefaultPhaseDetector, PhaseDetector
-    from .middleware import PhaseSteeringMiddleware
-    from .phase import Phase
-    from .state import PhaseAgentState, PhaseState
-
-# Deferred imports to avoid circular dependencies
-def __getattr__(name: str) -> type:
-    if name == "Phase":
-        from .phase import Phase
-
-        return Phase
-    elif name == "PhaseBehavior":
-        from .config import PhaseBehavior
-
-        return PhaseBehavior
-    elif name == "PhaseConfig":
-        from .config import PhaseConfig
-
-        return PhaseConfig
-    elif name == "PhaseTransition":
-        from .config import PhaseTransition
-
-        return PhaseTransition
-    elif name == "PhaseState":
-        from .state import PhaseState
-
-        return PhaseState
-    elif name == "PhaseAgentState":
-        from .state import PhaseAgentState
-
-        return PhaseAgentState
-    elif name == "PhaseDetector":
-        from .detector import PhaseDetector
-
-        return PhaseDetector
-    elif name == "DefaultPhaseDetector":
-        from .detector import DefaultPhaseDetector
-
-        return DefaultPhaseDetector
-    elif name == "PhaseSteeringMiddleware":
-        from .middleware import PhaseSteeringMiddleware
-
-        return PhaseSteeringMiddleware
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
+from bsm_examples.phase_steering.detector import ToolTriggeredDetector
+from bsm_examples.phase_steering.middleware import PhaseSteeringMiddleware
+from bsm_examples.phase_steering.models import (
+    Phase,
+    PhaseBehavior,
+    PhaseConfig,
+    PhaseTransitionRule,
+)
+from bsm_examples.phase_steering.state import PhaseAgentState
 
 __all__ = [
     "Phase",
-    "PhaseAgentState",
     "PhaseBehavior",
     "PhaseConfig",
-    "PhaseDetector",
-    "DefaultPhaseDetector",
-    "PhaseState",
+    "PhaseTransitionRule",
+    "PhaseAgentState",
+    "ToolTriggeredDetector",
     "PhaseSteeringMiddleware",
-    "PhaseTransition",
 ]

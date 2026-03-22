@@ -1,24 +1,19 @@
-"""Behavior Drift Detection middleware for LangGraph agents.
+"""Worker Heartbeat Monitor middleware for LangGraph agents.
 
-This module provides middleware for detecting and correcting behavior drift
-in LLM-based agents, where the model gradually stops using tools it was
-trained to invoke.
+Detects when an agent stops calling a designated tool (e.g. ``send_message``)
+and injects a ``<system>``-tagged reminder to nudge it back on track.
 """
 
 from __future__ import annotations
 
-from bsm_examples.drift_detection.middleware import (
-    DriftDetectionConfig,
-    DriftDetector,
-    DriftSteeringMiddleware,
-    ToolUsagePattern,
-)
-from bsm_examples.drift_detection.state import DriftAgentState
+from bsm_examples.drift_detection.detector import HeartbeatDetector
+from bsm_examples.drift_detection.middleware import HeartbeatMiddleware
+from bsm_examples.drift_detection.models import HeartbeatConfig
+from bsm_examples.drift_detection.state import HeartbeatAgentState
 
 __all__ = [
-    "ToolUsagePattern",
-    "DriftDetectionConfig",
-    "DriftDetector",
-    "DriftSteeringMiddleware",
-    "DriftAgentState",
+    "HeartbeatConfig",
+    "HeartbeatAgentState",
+    "HeartbeatDetector",
+    "HeartbeatMiddleware",
 ]
