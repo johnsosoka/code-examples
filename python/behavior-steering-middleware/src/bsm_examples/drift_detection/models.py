@@ -1,21 +1,21 @@
-"""Configuration models for the Worker Heartbeat Monitor middleware."""
+"""Configuration models for the Worker Check-In Monitor middleware."""
 
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
 
-class HeartbeatConfig(BaseModel):
-    """Configuration for the heartbeat monitoring middleware.
+class CheckInConfig(BaseModel):
+    """Configuration for the check-in monitoring middleware.
 
     Monitors a target tool (e.g., ``send_message``) and injects a reminder
     into the message stream when the agent has not used it in N turns.
 
     Example:
-        >>> config = HeartbeatConfig(target_tool="send_message", max_silent_turns=2)
+        >>> config = CheckInConfig(target_tool="send_message", max_silent_turns=2)
     """
 
-    target_tool: str = Field(description="Tool name to monitor for heartbeat activity")
+    target_tool: str = Field(description="Tool name to monitor for check-in activity")
 
     max_silent_turns: int = Field(
         default=3,

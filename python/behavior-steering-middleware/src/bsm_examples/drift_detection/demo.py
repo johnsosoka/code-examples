@@ -1,7 +1,7 @@
-"""Demo: Worker Heartbeat Monitor middleware.
+"""Demo: Worker Check-In Monitor middleware.
 
 A research agent is given a multi-step task. It tends to get absorbed in
-research and forget to send status updates. The HeartbeatMiddleware detects
+research and forget to send status updates. The CheckInMiddleware detects
 the silence and injects a <system> reminder after ``max_silent_turns`` turns
 without a ``send_message`` call.
 
@@ -22,9 +22,9 @@ from langchain.tools import tool  # noqa: E402
 from langchain_core.messages import HumanMessage  # noqa: E402
 from langchain_openai import ChatOpenAI  # noqa: E402
 
-from bsm_examples.drift_detection.middleware import HeartbeatMiddleware  # noqa: E402
-from bsm_examples.drift_detection.models import HeartbeatConfig  # noqa: E402
-from bsm_examples.drift_detection.state import HeartbeatAgentState  # noqa: E402
+from bsm_examples.drift_detection.middleware import CheckInMiddleware  # noqa: E402
+from bsm_examples.drift_detection.models import CheckInConfig  # noqa: E402
+from bsm_examples.drift_detection.state import CheckInAgentState  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -68,29 +68,29 @@ SYSTEM_PROMPT = (
 )
 
 
-def build_agent() -> tuple[object, HeartbeatMiddleware]:
+def build_agent() -> tuple[object, CheckInMiddleware]:
     """Build the agent and middleware. Returns both for state inspection."""
-    config = HeartbeatConfig(
+    config = CheckInConfig(
         target_tool="send_message",
         max_silent_turns=2,
         max_interventions=3,
         cooldown_turns=1,
     )
-    middleware = HeartbeatMiddleware(config)
+    middleware = CheckInMiddleware(config)
     agent = create_agent(
         model=ChatOpenAI(model="gpt-4.1-mini"),
         tools=[send_message, do_research, write_report],
         system_prompt=SYSTEM_PROMPT,
         middleware=[middleware],
-        state_schema=HeartbeatAgentState,
+        state_schema=CheckInAgentState,
     )
     return agent, middleware
 
 
 def run_demo() -> None:
-    """Run a 5-turn research conversation showing heartbeat monitoring in action."""
+    """Run a 5-turn research conversation showing check-in monitoring in action."""
     print("=" * 60)
-    print("WORKER HEARTBEAT MONITOR DEMO")
+    print("WORKER CHECK-IN MONITOR DEMO")
     print("=" * 60)
     print("Monitoring: send_message (max silent turns: 2)")
     print()
@@ -113,14 +113,14 @@ def run_demo() -> None:
         }
     )
 
-    turns_since = result.get("turns_since_heartbeat", "N/A")
+    turns_since = result.get("turns_since_check_in", "N/A")
     interventions = result.get("intervention_count", "N/A")
 
     print()
     print("=" * 60)
     print("FINAL STATE")
     print("=" * 60)
-    print(f"  turns_since_heartbeat : {turns_since}")
+    print(f"  turns_since_check_in  : {turns_since}")
     print(f"  intervention_count    : {interventions}")
     print()
     print("  Conversation:")

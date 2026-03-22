@@ -1,6 +1,6 @@
-"""Core detection logic for the Worker Heartbeat Monitor middleware.
+"""Core detection logic for the Worker Check-In Monitor middleware.
 
-The HeartbeatDetector is a plain, stateful class with no LangChain
+The CheckInDetector is a plain, stateful class with no LangChain
 dependencies. It tracks how many turns have elapsed since the monitored
 tool was last called and exposes a simple should_intervene / record_turn
 interface consumed by the middleware.
@@ -12,30 +12,30 @@ import logging
 
 from langchain_core.messages import AIMessage, BaseMessage
 
-from bsm_examples.drift_detection.models import HeartbeatConfig
+from bsm_examples.drift_detection.models import CheckInConfig
 
 logger = logging.getLogger(__name__)
 
 
-class HeartbeatDetector:
+class CheckInDetector:
     """Tracks tool-call silence and determines when to intervene.
 
     State is fully mutable and intended to be reset between conversations.
 
     Example:
-        >>> config = HeartbeatConfig(target_tool="send_message", max_silent_turns=3)
-        >>> detector = HeartbeatDetector(config)
+        >>> config = CheckInConfig(target_tool="send_message", max_silent_turns=3)
+        >>> detector = CheckInDetector(config)
         >>> detector.record_turn(messages)
         >>> if detector.should_intervene():
         ...     detector.record_intervention()
         ...     print(detector.build_reminder())
     """
 
-    def __init__(self, config: HeartbeatConfig) -> None:
+    def __init__(self, config: CheckInConfig) -> None:
         """Initialise the detector.
 
         Args:
-            config: Heartbeat monitoring configuration.
+            config: Check-in monitoring configuration.
         """
         self._config = config
         self.turns_since_target: int = 0
@@ -60,7 +60,7 @@ class HeartbeatDetector:
                 for tc in msg.tool_calls:
                     if tc.get("name") == self._config.target_tool:
                         target_used = True
-                        logger.debug("Heartbeat detected: %s called", self._config.target_tool)
+                        logger.debug("Check-in detected: %s called", self._config.target_tool)
                         break
             if target_used:
                 break
@@ -100,7 +100,7 @@ class HeartbeatDetector:
         """Record that an intervention was performed this turn."""
         self.intervention_count += 1
         self.turns_since_last_intervention = 0
-        logger.info("Heartbeat intervention #%d fired", self.intervention_count)
+        logger.info("Check-in intervention #%d fired", self.intervention_count)
 
     def build_reminder(self) -> str:
         """Build the formatted reminder string from the configured template.
@@ -121,4 +121,4 @@ class HeartbeatDetector:
         self.turns_since_target = 0
         self.intervention_count = 0
         self.turns_since_last_intervention = self._config.cooldown_turns
-        logger.debug("HeartbeatDetector reset")
+        logger.debug("CheckInDetector reset")

@@ -14,7 +14,7 @@ static and only declares that `<system>` tags will appear. State updates flow ba
 
 | Pattern | Scenario | Use Case |
 |---------|----------|----------|
-| **Worker Heartbeat Monitor** | Research agent that must periodically report status | Detecting silent tool-call gaps in long-running agents |
+| **Worker Check-In Monitor** | Research agent that must periodically report status | Detecting silent tool-call gaps in long-running agents |
 | **Shopping Recommendation Agent** | Product advisor with a fixed turn budget | Budget-constrained conversations requiring a definite outcome |
 | **Tool-Triggered Personalization** | Personal shopping assistant progressing through workflow phases | Deterministic multi-phase workflows driven by tool calls |
 
@@ -37,12 +37,12 @@ poetry run python -m bsm_examples.phase_steering.demo
 poetry run pytest tests/ -v
 ```
 
-## Pattern 1: Worker Heartbeat Monitor
+## Pattern 1: Worker Check-In Monitor
 
 **Problem:** Agents absorbed in multi-step tasks stop calling a designated reporting tool (e.g.
 `send_message`), leaving the system with no visibility into agent progress.
 
-**Solution:** `HeartbeatMiddleware` tracks turns since the last call to the target tool. When silence
+**Solution:** `CheckInMiddleware` tracks turns since the last call to the target tool. When silence
 exceeds `max_silent_turns`, it injects a `<system>` reminder into the next model call.
 
 ```mermaid
@@ -55,7 +55,7 @@ flowchart LR
     E --> F{Response uses<br/>target tool?}
     F -- Yes --> G[Reset counter]
     F -- No --> H[Increment counter]
-    G --> I["Return state:<br/>turns_since_heartbeat<br/>intervention_count"]
+    G --> I["Return state:<br/>turns_since_check_in<br/>intervention_count"]
     H --> I
 ```
 
@@ -64,9 +64,9 @@ from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langchain.tools import tool
 from bsm_examples.drift_detection import (
-    HeartbeatConfig,
-    HeartbeatMiddleware,
-    HeartbeatAgentState,
+    CheckInConfig,
+    CheckInMiddleware,
+    CheckInAgentState,
 )
 
 
@@ -82,13 +82,13 @@ def do_research(topic: str) -> str:
     return f"Research findings on '{topic}': ..."
 
 
-config = HeartbeatConfig(
+config = CheckInConfig(
     target_tool="send_message",
     max_silent_turns=2,
     max_interventions=3,
     cooldown_turns=1,
 )
-middleware = HeartbeatMiddleware(config)
+middleware = CheckInMiddleware(config)
 
 agent = create_agent(
     model=ChatOpenAI(model="gpt-4.1-mini"),
@@ -98,11 +98,11 @@ agent = create_agent(
         "You will receive <system> tags with guidance — follow them."
     ),
     middleware=[middleware],
-    state_schema=HeartbeatAgentState,
+    state_schema=CheckInAgentState,
 )
 
 result = agent.invoke({"messages": [HumanMessage(content="Research renewable energy storage.")]})
-turns_since = result.get("turns_since_heartbeat")
+turns_since = result.get("turns_since_check_in")
 interventions = result.get("intervention_count")
 ```
 
@@ -110,7 +110,7 @@ interventions = result.get("intervention_count")
 - Single target tool monitored per middleware instance
 - Configurable silence threshold (`max_silent_turns`), intervention cap, and cooldown
 - Reminder text is a configurable template with `{turns_since}` and `{tool}` placeholders
-- `HeartbeatAgentState` exposes `turns_since_heartbeat` and `intervention_count`
+- `CheckInAgentState` exposes `turns_since_check_in` and `intervention_count`
 
 ## Pattern 2: Shopping Recommendation Agent
 
@@ -367,11 +367,11 @@ python/behavior-steering-middleware/
 ├── README.md
 ├── src/bsm_examples/
 │   ├── __init__.py
-│   ├── drift_detection/            # Worker Heartbeat Monitor
-│   │   ├── models.py               # HeartbeatConfig
-│   │   ├── state.py                # HeartbeatAgentState
-│   │   ├── detector.py             # HeartbeatDetector
-│   │   ├── middleware.py           # HeartbeatMiddleware
+│   ├── drift_detection/            # Worker Check-In Monitor
+│   │   ├── models.py               # CheckInConfig
+│   │   ├── state.py                # CheckInAgentState
+│   │   ├── detector.py             # CheckInDetector
+│   │   ├── middleware.py           # CheckInMiddleware
 │   │   ├── demo.py
 │   │   └── DIAGRAM.md             # Detailed mermaid flowchart
 │   ├── turn_urgency/               # Shopping Recommendation Agent
@@ -432,7 +432,7 @@ poetry run pytest tests/ -v
 4. **Tool-triggered transitions:** Phase transitions fire in `wrap_tool_call` after the trigger
    tool executes — no heuristics, no scoring, deterministic advancement.
 5. **State observability:** Middleware writes diagnostics back to agent state via
-   `ExtendedModelResponse` + `Command(update={...})`, making heartbeat counts, urgency levels,
+   `ExtendedModelResponse` + `Command(update={...})`, making check-in counts, urgency levels,
    and phase tracking accessible on every `agent.invoke` result.
 6. **Pydantic configuration:** Type-safe, validated configuration with sensible defaults across
    all three patterns.
