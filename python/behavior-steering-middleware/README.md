@@ -45,6 +45,20 @@ poetry run pytest tests/ -v
 **Solution:** `HeartbeatMiddleware` tracks turns since the last call to the target tool. When silence
 exceeds `max_silent_turns`, it injects a `<system>` reminder into the next model call.
 
+```mermaid
+flowchart LR
+    A[wrap_model_call] --> B{turns since<br/>target tool >= N?}
+    B -- Yes --> C["Append &lt;system&gt; reminder"]
+    B -- No --> D[Pass through]
+    C --> D
+    D --> E[Call LLM]
+    E --> F{Response uses<br/>target tool?}
+    F -- Yes --> G[Reset counter]
+    F -- No --> H[Increment counter]
+    G --> I["Return state:<br/>turns_since_heartbeat<br/>intervention_count"]
+    H --> I
+```
+
 ```python
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
@@ -107,6 +121,26 @@ spending all turns on questions and never delivering a recommendation.
 urgency-tagged `<system>` modifier on every model call, shifting the agent from exploratory to
 decisive. When `required_completion_tool` is set, the middleware escalates to `TERMINAL` urgency
 until that tool is called.
+
+```mermaid
+flowchart LR
+    A[wrap_model_call] --> B["Count turns<br/>from messages"]
+    B --> C{"Remaining<br/>ratio"}
+    C -->|">60%"| D["EXPLORATION"]
+    C -->|"30-60%"| E["BALANCED"]
+    C -->|"1-30%"| F["EFFICIENCY"]
+    C -->|"0%"| G["TERMINAL"]
+    D --> H
+    E --> H
+    F --> H
+    G --> I{"recommend_product<br/>called yet?"}
+    I -- No --> J["Forceful escalation"]
+    I -- Yes --> H
+    J --> H["Append &lt;system&gt;<br/>urgency guidance"]
+    H --> K[Call LLM]
+    K --> L["Scan response for<br/>completion tool"]
+    L --> M["Return state:<br/>urgency_level, turns_remaining<br/>completion_tool_called"]
+```
 
 ```python
 from langchain.agents import create_agent
@@ -175,6 +209,37 @@ per-phase tool constraints without reliable enforcement.
 **Solution:** `PhaseSteeringMiddleware` detects phase transitions in `wrap_tool_call` (after a
 trigger tool executes) and injects phase-appropriate `<system>` guidance in `wrap_model_call`.
 Transitions are deterministic — no heuristics, no ambiguity.
+
+```mermaid
+stateDiagram-v2
+    [*] --> DISCOVERY
+    DISCOVERY --> CURATION : note_preferences()
+    CURATION --> RECOMMENDATION : shortlist_items()
+    RECOMMENDATION --> COMPLETE : present_recommendation()
+    COMPLETE --> [*]
+
+    DISCOVERY : browse_catalog, note_preferences
+    CURATION : filter_products, compare_options, shortlist_items
+    RECOMMENDATION : present_recommendation
+```
+
+```mermaid
+flowchart LR
+    subgraph wrap_model_call
+        A[Request] --> B["Append &lt;system&gt;<br/>phase guidance"]
+        B --> C[Call LLM]
+        C --> D["Return state:<br/>current_phase"]
+    end
+    subgraph wrap_tool_call
+        E[Tool request] --> F{Tool in<br/>allow-list?}
+        F -- No --> G[Block with error]
+        F -- Yes --> H[Execute tool]
+        H --> I{Trigger tool?}
+        I -- Yes --> J[Transition phase]
+        I -- No --> K[Return result]
+        J --> K
+    end
+```
 
 ```python
 from langchain.agents import create_agent
@@ -303,26 +368,26 @@ python/behavior-steering-middleware/
 ├── src/bsm_examples/
 │   ├── __init__.py
 │   ├── drift_detection/            # Worker Heartbeat Monitor
-│   │   ├── __init__.py
 │   │   ├── models.py               # HeartbeatConfig
 │   │   ├── state.py                # HeartbeatAgentState
 │   │   ├── detector.py             # HeartbeatDetector
 │   │   ├── middleware.py           # HeartbeatMiddleware
-│   │   └── demo.py
+│   │   ├── demo.py
+│   │   └── DIAGRAM.md             # Detailed mermaid flowchart
 │   ├── turn_urgency/               # Shopping Recommendation Agent
-│   │   ├── __init__.py
 │   │   ├── models.py               # TurnUrgencyConfig, UrgencyLevel, UrgencyPrompts
 │   │   ├── state.py                # UrgencyAgentState
 │   │   ├── calculator.py           # UrgencyCalculator, UrgencyState
 │   │   ├── middleware.py           # TurnUrgencyMiddleware
-│   │   └── demo.py
+│   │   ├── demo.py
+│   │   └── DIAGRAM.md             # Detailed mermaid flowchart
 │   └── phase_steering/             # Tool-Triggered Personalization
-│       ├── __init__.py
 │       ├── models.py               # Phase, PhaseBehavior, PhaseTransitionRule, PhaseConfig
 │       ├── state.py                # PhaseAgentState
 │       ├── detector.py             # ToolTriggeredDetector
 │       ├── middleware.py           # PhaseSteeringMiddleware
-│       └── demo.py
+│       ├── demo.py
+│       └── DIAGRAM.md             # Detailed mermaid flowcharts
 └── tests/
     ├── helpers.py
     ├── test_drift_detection.py
