@@ -183,9 +183,11 @@ def run_demo() -> None:
     conversation: list[HumanMessage] = []
 
     turns = [
-        "Hi! I'm looking for a new laptop. I work in software development and do some gaming.",
-        "I'd like something under $2000, prefer 16GB RAM minimum, and good battery life.",
-        "Can you narrow it down to the top 2-3 options and make a recommendation?",
+        "Hi! I'm looking for a new laptop for software development and gaming. "
+        "Browse what's available and then note my preferences: "
+        "under $2000, 16GB+ RAM, good battery life.",
+        "Great, now filter those down and shortlist the top 2-3 options for me.",
+        "Perfect. Based on the shortlist, give me your final recommendation.",
     ]
 
     for i, user_message in enumerate(turns, 1):

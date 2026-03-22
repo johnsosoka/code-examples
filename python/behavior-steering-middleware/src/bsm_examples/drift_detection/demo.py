@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 @tool
 def send_message(message: str) -> str:
-    """Send a status update message to the team."""
+    """Post a message to the team channel."""
     return f"Message sent: {message}"
 
 
@@ -63,7 +63,6 @@ def write_report(content: str) -> str:
 SYSTEM_PROMPT = (
     "You are a diligent research agent working on a multi-part project. "
     "Use the available tools to gather information and compile a report. "
-    "Keep the team informed of your progress via the `send_message` tool. "
     "You will receive <framework_instruction> tags with guidance — follow them."
 )
 

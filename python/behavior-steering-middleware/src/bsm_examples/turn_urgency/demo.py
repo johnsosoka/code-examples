@@ -69,6 +69,7 @@ def build_agent() -> object:
     config = TurnUrgencyConfig(
         max_turns=5,
         required_completion_tool="recommend_product",
+        count_human_turns_only=True,
     )
     middleware = TurnUrgencyMiddleware(config)
     agent = create_agent(
