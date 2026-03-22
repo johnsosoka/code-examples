@@ -7,7 +7,7 @@ Tests cover:
 - TurnUrgencyConfig validation
 - UrgencyCalculator turn counting
 - UrgencyCalculator level determination
-- TurnUrgencyMiddleware message modification
+- TurnUrgencyMiddleware wrap_model_call integration
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from bsm_examples.turn_urgency import (
     UrgencyPrompts,
     UrgencyThresholds,
 )
+from tests.helpers import make_mock_handler, make_mock_request
 
 
 class TestUrgencyLevel:
@@ -336,45 +337,58 @@ class TestTurnUrgencyMiddleware:
     def test_process_messages_injects_urgency(
         self, middleware: TurnUrgencyMiddleware
     ) -> None:
-        """Middleware should inject urgency into system prompt."""
-        messages = [
-            SystemMessage(content="You are helpful."),
-            HumanMessage(content="Hello"),
-        ]
-        modified, urgency = middleware.process_messages(messages)
+        """Middleware should inject urgency guidance into messages."""
+        request = make_mock_request(
+            messages=[HumanMessage(content="Hello")],
+        )
+        handler = make_mock_handler()
 
-        # Should have same number of messages
-        assert len(modified) == 2
+        middleware.wrap_model_call(request, handler)
 
-        # System message should contain urgency marker
-        system_msg = modified[0]
-        assert isinstance(system_msg, SystemMessage)
-        assert "[URGENCY:" in system_msg.content
-        assert urgency.current_level == UrgencyLevel.EXPLORATION
+        # override should have been called with messages containing a <system> tag
+        request.override.assert_called_once()
+        call_kwargs = request.override.call_args.kwargs
+        injected_messages = call_kwargs["messages"]
+        # Last message should be the steering message
+        steering_msg = injected_messages[-1]
+        assert isinstance(steering_msg, SystemMessage)
+        assert isinstance(steering_msg.content, str)
+        assert "<system>" in steering_msg.content
+        assert "URGENCY:" in steering_msg.content
+        assert middleware.current_urgency is not None
+        assert middleware.current_urgency.current_level == UrgencyLevel.EXPLORATION
 
-    def test_process_messages_creates_system_if_missing(
+    def test_process_messages_appends_steering_message(
         self, middleware: TurnUrgencyMiddleware
     ) -> None:
-        """Middleware should create system message if none exists."""
-        messages = [HumanMessage(content="Hello")]
-        modified, urgency = middleware.process_messages(messages)
+        """Middleware should append a <system>-tagged message to the list."""
+        request = make_mock_request(
+            messages=[HumanMessage(content="Hello")],
+        )
+        handler = make_mock_handler()
 
-        # Should now have 2 messages (system + human)
-        assert len(modified) == 2
-        assert isinstance(modified[0], SystemMessage)
-        assert "[URGENCY:" in modified[0].content
+        middleware.wrap_model_call(request, handler)
+
+        request.override.assert_called_once()
+        call_kwargs = request.override.call_args.kwargs
+        injected_messages = call_kwargs["messages"]
+        # Original message + steering message
+        assert len(injected_messages) == 2
+        assert isinstance(injected_messages[-1], SystemMessage)
+        assert "<system>" in injected_messages[-1].content
 
     def test_urgency_transition_tracking(
         self, middleware: TurnUrgencyMiddleware
     ) -> None:
-        """Middleware should track urgency transitions."""
-        # First call - EXPLORATION
-        messages1 = [HumanMessage(content="Hello")]
-        _, urgency1 = middleware.process_messages(messages1)
-        assert urgency1.current_level == UrgencyLevel.EXPLORATION
-        assert middleware.current_urgency == urgency1
+        """Middleware should track urgency transitions across calls."""
+        # First call — EXPLORATION (1 human message, 4 remaining of 5 = 80%)
+        request1 = make_mock_request(messages=[HumanMessage(content="Hello")])
+        middleware.wrap_model_call(request1, make_mock_handler())
+        assert middleware.current_urgency is not None
+        assert middleware.current_urgency.current_level == UrgencyLevel.EXPLORATION
 
-        # Second call with more messages - should transition
+        # Second call with enough messages to reach BALANCED
+        # 3 turns used out of 5 = 40% remaining -> EFFICIENCY; use 2 turns = 60% -> BALANCED
         messages2 = [
             HumanMessage(content="1"),
             AIMessage(content="1"),
@@ -382,13 +396,14 @@ class TestTurnUrgencyMiddleware:
             AIMessage(content="2"),
             HumanMessage(content="3"),
         ]
-        _, urgency2 = middleware.process_messages(messages2)
-        assert urgency2.current_level == UrgencyLevel.BALANCED
+        request2 = make_mock_request(messages=messages2)
+        middleware.wrap_model_call(request2, make_mock_handler())
+        assert middleware.current_urgency.current_level == UrgencyLevel.BALANCED
 
     def test_reset_clears_urgency(self, middleware: TurnUrgencyMiddleware) -> None:
         """Reset should clear urgency tracking."""
-        messages = [HumanMessage(content="Hello")]
-        middleware.process_messages(messages)
+        request = make_mock_request(messages=[HumanMessage(content="Hello")])
+        middleware.wrap_model_call(request, make_mock_handler())
         assert middleware.current_urgency is not None
 
         middleware.reset()
@@ -411,34 +426,45 @@ class TestIntegration:
     """Integration tests for the complete middleware flow."""
 
     def test_full_conversation_flow(self) -> None:
-        """Test a complete conversation with urgency escalation."""
+        """Test a complete conversation with urgency escalation via wrap_model_call."""
         config = TurnUrgencyConfig(max_turns=3)
         middleware = TurnUrgencyMiddleware(config)
 
-        # Turn 1: EXPLORATION (1 turn used, 2 remaining = 67%)
+        # Turn 1: EXPLORATION (1 human message, 2 remaining of 3 = 67%)
         messages1 = [HumanMessage(content="Hello")]
-        modified1, urgency1 = middleware.process_messages(messages1)
+        request1 = make_mock_request(messages=messages1)
+        middleware.wrap_model_call(request1, make_mock_handler())
+        urgency1 = middleware.current_urgency
+        assert urgency1 is not None
         assert urgency1.current_level == UrgencyLevel.EXPLORATION
-        messages1.append(AIMessage(content="Hi"))
 
         # Turn 2: BALANCED (2 turns used, 1 remaining = 33%)
         # 33% > 30% (efficiency_max), so it's BALANCED
-        messages2 = messages1 + [HumanMessage(content="Question")]
-        modified2, urgency2 = middleware.process_messages(messages2)
+        messages2 = [
+            HumanMessage(content="Hello"),
+            AIMessage(content="Hi"),
+            HumanMessage(content="Question"),
+        ]
+        request2 = make_mock_request(messages=messages2)
+        middleware.wrap_model_call(request2, make_mock_handler())
+        urgency2 = middleware.current_urgency
+        assert urgency2 is not None
         assert urgency2.turns_used == 2
         assert urgency2.remaining_ratio == 1 / 3  # ~33%
         assert urgency2.current_level == UrgencyLevel.BALANCED
 
         # Turn 3: TERMINAL (3 turns used, 0 remaining = 0%)
+        # 3 human, 2 agent -> max = 3 turns used
         messages3 = messages2 + [AIMessage(content="Answer"), HumanMessage(content="Thanks")]
-        modified3, urgency3 = middleware.process_messages(messages3)
-        # 3 human, 2 agent = 3 turns used
-        # 0 remaining = 0% -> TERMINAL
+        request3 = make_mock_request(messages=messages3)
+        middleware.wrap_model_call(request3, make_mock_handler())
+        urgency3 = middleware.current_urgency
+        assert urgency3 is not None
         assert urgency3.current_level == UrgencyLevel.TERMINAL
         assert urgency3.is_terminal is True
 
     def test_custom_thresholds_flow(self) -> None:
-        """Test with custom urgency thresholds."""
+        """Test with custom urgency thresholds via wrap_model_call."""
         config = TurnUrgencyConfig(
             max_turns=10,
             thresholds=UrgencyThresholds(
@@ -454,18 +480,24 @@ class TestIntegration:
         for i in range(6):
             messages.extend([HumanMessage(content=f"{i}"), AIMessage(content=f"{i}")])
 
-        _, urgency = middleware.process_messages(messages)
+        request = make_mock_request(messages=messages)
+        middleware.wrap_model_call(request, make_mock_handler())
+        urgency = middleware.current_urgency
+        assert urgency is not None
         assert urgency.turns_used == 6
         assert urgency.remaining_ratio == 0.4
         assert urgency.current_level == UrgencyLevel.BALANCED
 
         # Add more messages to reach EFFICIENCY
-        # 8 turns used, 2 remaining = 20% -> EFFICIENCY (above 0%, below 20%)
+        # 8 turns used, 2 remaining = 20% -> EFFICIENCY (at threshold, not above)
         messages.extend([
             HumanMessage(content="x"), AIMessage(content="x"),
             HumanMessage(content="y"), AIMessage(content="y"),
         ])
-        _, urgency2 = middleware.process_messages(messages)
+        request2 = make_mock_request(messages=messages)
+        middleware.wrap_model_call(request2, make_mock_handler())
+        urgency2 = middleware.current_urgency
+        assert urgency2 is not None
         assert urgency2.turns_used == 8
         assert urgency2.remaining_ratio == 0.2
         # At exactly 20%, it's EFFICIENCY (not > 20%)

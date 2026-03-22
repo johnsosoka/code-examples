@@ -9,15 +9,21 @@ from __future__ import annotations
 import logging
 from collections import deque
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any, Callable
 
-from langchain.agents.middleware import AgentMiddleware
-from langchain.agents.middleware.types import ModelRequest, ModelResponse
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    AgentState,
+    ExtendedModelResponse,
+    ModelRequest,
+    ModelResponse,
+)
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
+from langgraph.runtime import Runtime
+from langgraph.types import Command
 from pydantic import BaseModel, Field, field_validator
 
-if TYPE_CHECKING:
-    pass
+from bsm_examples.drift_detection.state import DriftAgentState
 
 logger = logging.getLogger(__name__)
 
@@ -211,7 +217,10 @@ class DriftDetector:
             # Detect tool calls in AIMessage
             if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls"):
                 for tc in msg.tool_calls:
-                    tool_name = tc.get("name") or tc.get("function", {}).get("name")
+                    tc_dict: dict[str, Any] = dict(tc)
+                    tool_name = tc_dict.get("name") or tc_dict.get(
+                        "function", {}
+                    ).get("name")
                     if tool_name:
                         tools_called.append(tool_name)
                         logger.debug(
@@ -418,10 +427,14 @@ class DriftSteeringMiddleware(AgentMiddleware):
     Middleware that monitors tool usage patterns and steers agent behavior
     back toward expected patterns when drift is detected.
 
+    Steering content is injected as a ``<system>``-tagged message appended to
+    the conversation — not by modifying the system prompt. The agent's system
+    prompt should mention that ``<system>`` tags will appear with guidance.
+
     This middleware wraps model calls to:
     1. Record tool usage from each turn
     2. Calculate drift scores based on recent history
-    3. Inject corrective reminders when drift exceeds threshold
+    3. Append a ``<system>``-tagged corrective message when drift exceeds threshold
 
     Example:
         pattern = ToolUsagePattern(
@@ -430,15 +443,22 @@ class DriftSteeringMiddleware(AgentMiddleware):
             required_tools=["calculator"],
         )
         config = DriftDetectionConfig(intervention_threshold=0.5)
-
         middleware = DriftSteeringMiddleware(pattern, config)
 
         agent = create_agent(
             model=model,
             tools=[calculator_tool, wikipedia_tool],
             middleware=[middleware],
+            state_schema=DriftAgentState,
+            system_prompt=(
+                "You are a calculator assistant. Always use tools. "
+                "You will receive <system> tags with behavioral guidance "
+                "— follow them."
+            ),
         )
     """
+
+    state_schema = DriftAgentState
 
     def __init__(
         self,
@@ -455,69 +475,62 @@ class DriftSteeringMiddleware(AgentMiddleware):
         self.pattern = pattern
         self.config = config or DriftDetectionConfig()
         self.detector = DriftDetector(pattern, self.config)
-        self._intervention_messages: list[SystemMessage] = []
 
     def wrap_model_call(
         self,
         request: ModelRequest,
-        handler: Any,
-    ) -> ModelResponse:
-        """
-        Wrap model call to inject drift corrections before inference.
-
-        Flow:
-        1. Check if intervention is needed based on current drift
-        2. If so, prepend corrective reminder to messages
-        3. Call model with (possibly modified) request
-        4. Record tool usage from response for next turn's analysis
-
-        Args:
-            request: The model request
-            handler: Function to call the model
-
-        Returns:
-            ModelResponse from the handler
-        """
-        # Check for drift and prepare intervention
-        modified_messages = list(request.messages)
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse | ExtendedModelResponse:
+        """Wrap model call to inject drift corrections before inference and record results."""
+        modified_request = request
 
         if self.detector.should_intervene():
+            pre_intervention_score = self.detector.calculate_drift_score()
             reminder = self._generate_reminder()
-            modified_messages.insert(0, SystemMessage(content=reminder))
-            self.detector.record_intervention()
+            steering_msg = SystemMessage(
+                content=f"<system>{reminder}</system>"
+            )
+            modified_messages = list(request.messages) + [steering_msg]
+            modified_request = request.override(messages=modified_messages)
             logger.warning(
-                f"Drift detected (score={self.detector.calculate_drift_score():.3f}). "
+                f"Drift detected (score={pre_intervention_score:.3f}). "
                 f"Injecting corrective reminder."
             )
+            self.detector.record_intervention()
 
-        # Create modified request if needed
-        if len(modified_messages) != len(request.messages):
-            request = request.override(messages=modified_messages)
+        response = handler(modified_request)
 
-        # Call the model
-        response = handler(request)
-
-        # Record tool usage from this turn
         if response.result:
-            all_messages = list(request.messages) + list(response.result)
-            self.detector.record_turn(all_messages)
+            self.detector.record_turn(response.result)
 
-            # Log drift status
-            drift_score = self.detector.calculate_drift_score()
-            if drift_score >= self.config.warning_threshold:
-                logger.info(f"Current drift score: {drift_score:.3f}")
+        drift_score = self.detector.calculate_drift_score()
+        if drift_score >= self.config.warning_threshold:
+            logger.info(f"Current drift score: {drift_score:.3f}")
 
-        return response
+        return ExtendedModelResponse(
+            model_response=response,
+            command=Command(
+                update={
+                    "drift_score": drift_score,
+                    "intervention_count": self.detector.intervention_count,
+                }
+            ),
+        )
+
+    def after_model(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+        """Push a drift report into agent state after each model call."""
+        return {"drift_report": self.detector.get_drift_report()}
 
     def _generate_reminder(self) -> str:
         """Generate a contextual reminder message based on current drift."""
-        # Identify under-used tools
-        weighted_observed = self.detector._calculate_weighted_frequencies()
-        underused_tools: list[str] = []
+        report = self.detector.get_drift_report()
+        tool_comparison = report["tool_comparison"]
 
+        # Identify under-used tools
+        underused_tools: list[str] = []
         for tool, expected in self.pattern.expected_tools.items():
-            observed = weighted_observed.get(tool, 0.0)
-            if observed < expected * 0.5:  # Less than half expected
+            observed = tool_comparison.get(tool, {}).get("observed", 0.0)
+            if observed < expected * 0.5:
                 underused_tools.append(tool)
 
         # Identify missing required tools
@@ -540,7 +553,6 @@ class DriftSteeringMiddleware(AgentMiddleware):
 
         # Add statistics if configured
         if self.config.include_statistics:
-            report = self.detector.get_drift_report()
             stats = f" [Current drift score: {report['drift_score']:.2f}]"
             reminder = reminder.rstrip() + stats
 
@@ -553,5 +565,4 @@ class DriftSteeringMiddleware(AgentMiddleware):
     def reset(self) -> None:
         """Reset the middleware state for a new conversation."""
         self.detector = DriftDetector(self.pattern, self.config)
-        self._intervention_messages = []
         logger.debug("DriftSteeringMiddleware reset for new conversation")

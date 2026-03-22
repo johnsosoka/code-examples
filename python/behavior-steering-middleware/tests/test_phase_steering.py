@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from tests.helpers import make_mock_handler, make_mock_request
+
 if TYPE_CHECKING:
     from bsm_examples.phase_steering.config import PhaseConfig
     from bsm_examples.phase_steering.state import PhaseState
@@ -427,59 +429,47 @@ class TestPhaseSteeringMiddleware:
         assert middleware.phase_history == []
 
     def test_process_request_injects_guidance(self, middleware) -> None:
-        """Test that process_request injects phase guidance."""
-        from bsm_examples.phase_steering.phase import Phase
-        from bsm_examples.phase_steering.state import PhaseState
+        """Test that wrap_model_call appends <system>-tagged phase guidance."""
+        request = make_mock_request(messages=[HumanMessage(content="Test")])
+        handler = make_mock_handler()
 
-        state = PhaseState()
-        state.record_phase_entry(Phase.GATHER)
+        middleware.wrap_model_call(request, handler)
 
-        messages = [HumanMessage(content="Test message")]
-        phase, modified_messages = middleware.process_request(state, messages)
+        request.override.assert_called_once()
+        call_kwargs = request.override.call_args.kwargs
+        injected_messages = call_kwargs["messages"]
+        steering_msg = injected_messages[-1]
+        assert isinstance(steering_msg, SystemMessage)
+        assert isinstance(steering_msg.content, str)
+        assert "<system>" in steering_msg.content
+        assert "[PHASE: Gather]" in steering_msg.content
+        assert "Focus on gathering data" in steering_msg.content
 
-        # Check that a system message was added
-        system_msgs = [m for m in modified_messages if isinstance(m, SystemMessage)]
-        assert len(system_msgs) > 0
+    def test_process_request_preserves_existing_messages(
+        self, middleware
+    ) -> None:
+        """Test that original messages are preserved with guidance appended."""
+        original_msg = HumanMessage(content="Test message")
+        request = make_mock_request(messages=[original_msg])
+        handler = make_mock_handler()
 
-        # Check that phase guidance is present
-        system_content = system_msgs[0].content
-        assert isinstance(system_content, str)
-        assert "[PHASE: Gather]" in system_content
-        assert "Focus on gathering data" in system_content
+        middleware.wrap_model_call(request, handler)
 
-    def test_process_request_appends_to_existing_system(self, middleware) -> None:
-        """Test that guidance is appended to existing system message."""
-        from bsm_examples.phase_steering.phase import Phase
-        from bsm_examples.phase_steering.state import PhaseState
-
-        state = PhaseState()
-        state.record_phase_entry(Phase.GATHER)
-
-        messages = [
-            SystemMessage(content="Original system prompt"),
-            HumanMessage(content="Test message"),
-        ]
-        phase, modified_messages = middleware.process_request(state, messages)
-
-        # Should still have only one system message
-        system_msgs = [m for m in modified_messages if isinstance(m, SystemMessage)]
-        assert len(system_msgs) == 1
-
-        # Content should include both original and phase guidance
-        content = system_msgs[0].content
-        assert isinstance(content, str)
-        assert "Original system prompt" in content
-        assert "[PHASE: Gather]" in content
+        request.override.assert_called_once()
+        call_kwargs = request.override.call_args.kwargs
+        injected_messages = call_kwargs["messages"]
+        assert len(injected_messages) == 2
+        assert injected_messages[0] is original_msg
+        assert isinstance(injected_messages[-1], SystemMessage)
+        assert "<system>" in injected_messages[-1].content
 
     def test_reset(self, middleware) -> None:
         """Test middleware reset functionality."""
         from bsm_examples.phase_steering.phase import Phase
-        from bsm_examples.phase_steering.state import PhaseState
 
-        # Process some requests to build state
-        state = PhaseState()
-        state.record_phase_entry(Phase.GATHER)
-        middleware.process_request(state, [HumanMessage(content="Test")])
+        # Make a call to advance internal iteration counters
+        request = make_mock_request(messages=[HumanMessage(content="Test")])
+        middleware.wrap_model_call(request, make_mock_handler())
 
         # Reset
         middleware.reset()
@@ -521,20 +511,20 @@ class TestDemo:
         assert config.initial_phase == Phase.GATHER
 
     def test_mock_tools(self) -> None:
-        """Test mock tool functions."""
-        from bsm_examples.phase_steering.demo import mock_compare, mock_search, mock_synthesize
+        """Test demo tool functions return expected content."""
+        from bsm_examples.phase_steering.demo import compare, search, synthesize
 
-        # Test search
-        result = mock_search("test query")
-        assert result["tool"] == "search"
-        assert "results" in result
+        # Test search returns a string mentioning the query
+        result = search.invoke({"query": "test query"})
+        assert isinstance(result, str)
+        assert "test query" in result
 
-        # Test compare
-        result = mock_compare(["a", "b"], ["x", "y"])
-        assert result["tool"] == "compare"
-        assert "comparison" in result
+        # Test compare returns a string mentioning the items
+        result = compare.invoke({"items": "a, b"})
+        assert isinstance(result, str)
+        assert "Comparison" in result
 
-        # Test synthesize
-        result = mock_synthesize("analysis", "recommendations")
-        assert result["tool"] == "synthesize"
-        assert "recommendations" in result
+        # Test synthesize returns a string with recommendations
+        result = synthesize.invoke({"analysis": "some analysis"})
+        assert isinstance(result, str)
+        assert "recommendation" in result.lower()

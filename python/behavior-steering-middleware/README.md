@@ -1,10 +1,16 @@
 # Behavior-Steering Middleware Examples
 
-Three working examples of behavior-steering middleware patterns for LangGraph agents. These patterns demonstrate how to shape agent behavior at the orchestration layer without modifying underlying models.
+Three working examples of behavior-steering middleware patterns for LangGraph agents. These patterns
+demonstrate how to shape agent behavior at the orchestration layer without modifying underlying models.
 
 ## Overview
 
-Behavior-Steering Middleware (BSM) intercepts agent execution flows to dynamically adjust behavior based on runtime context. This repository contains three distinct patterns:
+Behavior-Steering Middleware (BSM) intercepts agent execution flows to dynamically adjust behavior
+based on runtime context. Each middleware extends `AgentMiddleware` from `langchain.agents.middleware`
+and hooks into `create_agent` via `wrap_model_call`, `after_model`, and `wrap_tool_call`. Steering
+content is injected as `<system>`-tagged messages appended to the conversation — the system prompt is
+static and only declares that `<system>` tags will appear. State updates flow back to the agent via
+`ExtendedModelResponse` and `Command(update={...})`.
 
 | Pattern | Description | Use Case |
 |---------|-------------|----------|
@@ -18,7 +24,11 @@ Behavior-Steering Middleware (BSM) intercepts agent execution flows to dynamical
 # Install dependencies
 poetry install
 
-# Run individual demos
+# Configure API key
+cp .env.example .env
+# Edit .env and add your OPENAI_API_KEY
+
+# Run individual demos (each requires OPENAI_API_KEY)
 poetry run python -m bsm_examples.drift_detection.demo
 poetry run python -m bsm_examples.turn_urgency.demo
 poetry run python -m bsm_examples.phase_steering.demo
@@ -29,154 +39,245 @@ poetry run pytest tests/ -v
 
 ## Pattern 1: Behavior Drift Detection
 
-**Problem:** Agents gradually stop using tools and fall back on parametric knowledge, producing plausible-sounding but incorrect answers.
+**Problem:** Agents gradually stop using tools and fall back on parametric knowledge, producing
+plausible-sounding but unverified answers.
 
-**Solution:** Monitor tool usage patterns and inject corrective reminders when drift is detected.
+**Solution:** Monitor tool usage with a recency-weighted sliding window. When the drift score
+exceeds a threshold, inject a corrective `<system>` message into the next model call.
 
 ```python
-from bsm_examples.drift_detection import (
+from langchain.agents import create_agent
+from langchain_openai import ChatOpenAI
+from langchain.tools import tool
+from bsm_examples.drift_detection.middleware import (
     DriftDetectionConfig,
     DriftSteeringMiddleware,
     ToolUsagePattern,
 )
+from bsm_examples.drift_detection.state import DriftAgentState
 
-# Define expected tool usage
+
+@tool
+def calculate(a: float, b: float, operation: str) -> str:
+    """Perform arithmetic. Operations: add, subtract, multiply, divide."""
+    ...
+
+
+@tool
+def unit_convert(value: float, from_unit: str, to_unit: str) -> str:
+    """Convert between units. Supports miles/km, feet/meters."""
+    ...
+
+
 pattern = ToolUsagePattern(
     name="calculator_agent",
     expected_tools={"calculate": 0.8, "unit_convert": 0.2},
     required_tools=["calculate"],
+    minimum_frequencies={"calculate": 0.5},
 )
-
-# Configure drift detection
 config = DriftDetectionConfig(
-    pattern=pattern,
-    threshold=0.6,
-    reminder_message="Remember to use your available tools.",
+    intervention_threshold=0.6,
+    cooldown_turns=1,
+    max_interventions_per_conversation=3,
+)
+middleware = DriftSteeringMiddleware(pattern, config)
+
+agent = create_agent(
+    model=ChatOpenAI(model="gpt-4.1-mini"),
+    tools=[calculate, unit_convert],
+    system_prompt=(
+        "You are a calculator assistant. Always use tools for math. "
+        "You will receive <system> tags with behavioral guidance — follow them."
+    ),
+    middleware=[middleware],
+    state_schema=DriftAgentState,
 )
 
-# Apply middleware
-middleware = DriftSteeringMiddleware(pattern, config)
+result = agent.invoke({"messages": [HumanMessage(content="What is 15 * 23?")]})
+drift_score = result.get("drift_score", 0.0)
+intervention_count = result.get("intervention_count", 0)
 ```
 
-**Key Features:**
-- Sliding window tool usage tracking
-- Weighted drift score calculation (0.0 = no drift, 1.0 = max drift)
-- Intervention cooldown to prevent spam
-- Required/forbidden tool enforcement
+**Key features:**
+- Sliding window (`deque`) with recency-weighted frequency scoring
+- Drift score 0.0 (no drift) to 1.0 (maximum drift)
+- Intervention cooldown to prevent message spam
+- Required-tool enforcement
+- `DriftAgentState` exposes `drift_score`, `intervention_count`, and `drift_report`
 
 ## Pattern 2: Turn-Based Urgency
 
-**Problem:** Agents maintain consistent behavior regardless of remaining conversation budget, wasting turns on exploration when delivery is needed.
+**Problem:** Agents maintain consistent behavior regardless of remaining turn budget, wasting turns
+on exploration when delivery is needed.
 
-**Solution:** Dynamically modify system prompts based on remaining turn budget, shifting from exploratory → focused → urgent.
+**Solution:** Compute urgency from remaining turns and append an urgency-tagged `<system>` modifier
+to every model call, shifting the agent from exploratory to decisive as the budget is consumed.
 
 ```python
-from bsm_examples.turn_urgency import (
-    TurnUrgencyConfig,
-    TurnUrgencyMiddleware,
-    UrgencyLevel,
-)
+from langchain.agents import create_agent
+from langchain_openai import ChatOpenAI
+from langchain.tools import tool
+from bsm_examples.turn_urgency import TurnUrgencyConfig, TurnUrgencyMiddleware
+from bsm_examples.turn_urgency.types import UrgencyAgentState
 
-# Configure urgency thresholds
-config = TurnUrgencyConfig(
-    max_turns=5,
-    thresholds={
-        UrgencyLevel.EXPLORATION: 0.6,  # >60% budget remaining
-        UrgencyLevel.BALANCED: 0.3,     # 30-60% budget
-        UrgencyLevel.EFFICIENCY: 0.0,   # 0-30% budget
-    },
-)
 
-# Apply middleware
+@tool
+def analyze_code(code_snippet: str) -> str:
+    """Analyze a code snippet for common issues."""
+    ...
+
+
+config = TurnUrgencyConfig(max_turns=5)
 middleware = TurnUrgencyMiddleware(config)
+
+agent = create_agent(
+    model=ChatOpenAI(model="gpt-4.1-mini"),
+    tools=[analyze_code],
+    system_prompt=(
+        "You are a Python debugging assistant. "
+        "You will receive <system> tags with behavioral guidance — follow them."
+    ),
+    middleware=[middleware],
+    state_schema=UrgencyAgentState,
+)
+
+result = agent.invoke({"messages": messages})
+urgency_level = result.get("urgency_level")   # "EXPLORATION" | "BALANCED" | ...
+turns_remaining = result.get("turns_remaining")
 ```
 
-**Urgency Levels:**
+**Urgency levels:**
 
-| Level | Budget | Behavior |
-|-------|--------|----------|
+| Level | Budget remaining | Injected behavior |
+|-------|-----------------|-------------------|
 | **EXPLORATION** | >60% | Ask clarifying questions, explore alternatives |
 | **BALANCED** | 30-60% | Direct answers, limited follow-ups |
 | **EFFICIENCY** | <30% | Prioritize delivery, make assumptions |
 | **TERMINAL** | Final turn | Deliver immediately, no questions |
 
+`UrgencyAgentState` exposes `urgency_level`, `turns_used`, `turns_remaining`, and `is_terminal`.
+Three turn-counting modes are supported: pairs, human-only, and agent-only.
+
 ## Pattern 3: Phase-Based Steering
 
-**Problem:** Multi-step workflows (gather → analyze → recommend) lack structure—agents jump phases prematurely or get stuck in one phase.
+**Problem:** Multi-step workflows (gather → analyze → recommend) lack structure — agents jump phases
+prematurely or get stuck in one phase indefinitely.
 
-**Solution:** Detect current phase from state/tool usage and inject phase-appropriate guidance.
+**Solution:** Detect the current phase from state and tool usage, inject phase-appropriate
+`<system>` guidance on every model call, and enforce per-phase tool allowlists via `wrap_tool_call`.
 
 ```python
-from bsm_examples.phase_steering import (
-    Phase,
-    PhaseConfig,
-    PhaseSteeringMiddleware,
-)
+from langchain.agents import create_agent
+from langchain_openai import ChatOpenAI
+from langchain.tools import tool
+from bsm_examples.phase_steering.config import PhaseBehavior, PhaseConfig, PhaseTransition
+from bsm_examples.phase_steering.middleware import PhaseSteeringMiddleware
+from bsm_examples.phase_steering.phase import Phase
+from bsm_examples.phase_steering.state import PhaseAgentState
 
-# Define phase behaviors
+
+@tool
+def search(query: str) -> str:
+    """Search for information on a topic."""
+    ...
+
+
+@tool
+def compare(items: str) -> str:
+    """Compare multiple approaches. Pass comma-separated items."""
+    ...
+
+
+@tool
+def synthesize(analysis: str) -> str:
+    """Synthesize analysis into actionable recommendations."""
+    ...
+
+
 config = PhaseConfig(
     phases={
         Phase.GATHER: PhaseBehavior(
-            description="Collect information",
-            allowed_tools=["search", "fetch"],
+            system_prompt_addition="Collect information. Use search and fetch_document.",
+            allowed_tools=["search", "fetch_document"],
             max_iterations=5,
         ),
         Phase.ANALYZE: PhaseBehavior(
-            description="Analyze findings",
-            allowed_tools=["compare", "evaluate"],
+            system_prompt_addition="Compare approaches and identify trade-offs.",
+            allowed_tools=["compare"],
             max_iterations=3,
         ),
         Phase.RECOMMEND: PhaseBehavior(
-            description="Synthesize recommendations",
+            system_prompt_addition="Synthesize clear, actionable recommendations.",
             allowed_tools=["synthesize"],
             max_iterations=2,
+        ),
+        Phase.COMPLETE: PhaseBehavior(
+            system_prompt_addition="Present the final summary to the user.",
+            allowed_tools=[],
+            max_iterations=1,
         ),
     },
     transitions=[
         PhaseTransition(from_phase=Phase.GATHER, to_phase=Phase.ANALYZE),
         PhaseTransition(from_phase=Phase.ANALYZE, to_phase=Phase.RECOMMEND),
+        PhaseTransition(from_phase=Phase.RECOMMEND, to_phase=Phase.COMPLETE),
     ],
+    initial_phase=Phase.GATHER,
+    enable_auto_transition=True,
+)
+middleware = PhaseSteeringMiddleware(config)
+
+agent = create_agent(
+    model=ChatOpenAI(model="gpt-4.1-mini"),
+    tools=[search, compare, synthesize],
+    system_prompt=(
+        "You are a research assistant. "
+        "You will receive <system> tags with phase guidance "
+        "— follow them and use only the tools specified."
+    ),
+    middleware=[middleware],
+    state_schema=PhaseAgentState,
 )
 
-# Apply middleware
-middleware = PhaseSteeringMiddleware(config)
+result = agent.invoke({"messages": messages})
+current_phase = result.get("current_phase")
+phase_iteration = result.get("phase_iteration")
 ```
 
-**Phase Detection:**
-- Based on tool usage patterns
-- State content analysis
-- Iteration limits per phase
-- Explicit transition signals
+**Phase detection priority:** explicit state field > tool usage patterns > state content > default.
+`PhaseAgentState` exposes `current_phase`, `phase_iteration`, and `total_iterations`.
 
 ## Project Structure
 
 ```
 python/behavior-steering-middleware/
+├── .env.example
 ├── pyproject.toml
 ├── README.md
 ├── src/bsm_examples/
 │   ├── __init__.py
 │   ├── drift_detection/
 │   │   ├── __init__.py
-│   │   ├── middleware.py    # Core drift detection logic
-│   │   ├── state.py         # State type definitions
-│   │   └── demo.py          # Runnable demonstration
+│   │   ├── middleware.py    # DriftDetector + DriftSteeringMiddleware
+│   │   ├── state.py         # DriftAgentState
+│   │   └── demo.py          # Runnable demonstration (requires OPENAI_API_KEY)
 │   ├── turn_urgency/
 │   │   ├── __init__.py
-│   │   ├── middleware.py    # Urgency calculation and injection
-│   │   ├── types.py         # Config and type definitions
-│   │   └── demo.py          # Runnable demonstration
+│   │   ├── middleware.py    # UrgencyCalculator + TurnUrgencyMiddleware
+│   │   ├── types.py         # TurnUrgencyConfig, UrgencyLevel, UrgencyAgentState
+│   │   └── demo.py          # Runnable demonstration (requires OPENAI_API_KEY)
 │   └── phase_steering/
 │       ├── __init__.py
-│       ├── middleware.py    # Phase detection and guidance
-│       ├── phase.py         # Phase enum and transitions
-│       ├── config.py        # Phase configuration
-│       ├── state.py         # Phase state management
-│       └── demo.py          # Runnable demonstration
+│       ├── middleware.py    # PhaseSteeringMiddleware
+│       ├── phase.py         # Phase enum
+│       ├── config.py        # PhaseConfig, PhaseBehavior, PhaseTransition
+│       ├── state.py         # PhaseState (Pydantic) + PhaseAgentState (TypedDict)
+│       └── demo.py          # Runnable demonstration (requires OPENAI_API_KEY)
 └── tests/
-    ├── test_drift_detection.py   # 31 tests
-    ├── test_turn_urgency.py      # 34 tests
-    └── test_phase_steering.py    # 34 tests
+    ├── helpers.py
+    ├── test_drift_detection.py
+    ├── test_turn_urgency.py
+    └── test_phase_steering.py
 ```
 
 ## Technical Details
@@ -184,14 +285,15 @@ python/behavior-steering-middleware/
 ### Dependencies
 
 - **Python:** 3.11+
-- **LangGraph:** 1.0+ (modern StateGraph patterns)
-- **Pydantic:** 2.0+ (configuration models)
-- **LangChain:** 1.0+ (message types)
+- **LangChain:** 1.2+ (required for `AgentMiddleware`, `ExtendedModelResponse`)
+- **LangGraph:** 1.0+ (modern `StateGraph` patterns)
+- **LangChain-OpenAI:** for `ChatOpenAI` in demos
+- **Pydantic:** 2.0+ (configuration and state models)
 
 ### Code Quality
 
 ```bash
-# Type checking
+# Type checking (strict mode)
 poetry run mypy src/
 
 # Linting
@@ -206,61 +308,26 @@ poetry run pytest tests/ -v
 
 ### Design Principles
 
-1. **Middleware Pattern:** Each example wraps LangGraph execution without modifying core agent logic
-2. **Pydantic Configuration:** Type-safe, validated configuration with sensible defaults
-3. **State Management:** TypedDict-based state with steering metadata
-4. **Observability:** Logging and reporting for debugging steering decisions
-
-## Demo Outputs
-
-### Drift Detection
-
-```
---- Turn 2 ---
-User: Convert 5 miles to kilometers
-
-⚡ INTERVENTION TRIGGERED ⚡
-   Drift score: 0.85
-   Reminder: [SYSTEM REMINDER] You appear to be responding without using tools...
-
-Agent: [Tool call: unit_convert(...)]
-Drift Score: 0.00 ✓
-```
-
-### Turn Urgency
-
-```
-[Turn 1/5] Urgency: EXPLORATION
-  [Injected modifier: You have ample turns remaining...]
-
-[Turn 4/5] Urgency: EFFICIENCY
-  [Injected modifier: You have limited turns remaining...]
-
-[Turn 5/5] Urgency: TERMINAL ⚠️ FINAL TURN
-  [Injected modifier: FINAL TURN: Deliver your best solution...]
-```
-
-### Phase Steering
-
-```
-[Phase: Gather] Starting information gathering...
-  → Phase guidance: [PHASE: Gather]
-
---- Phase Transition: Gather → Analyze ---
-
-[Phase: Analyze] Starting analysis...
-  → Phase guidance: [PHASE: Analyze]
-
---- Phase Transition: Analyze → Recommend ---
-```
+1. **Middleware pattern:** Each example extends `AgentMiddleware` and hooks into `create_agent`
+   without modifying core agent or model logic.
+2. **Static system prompt:** The system prompt declares that `<system>` tags will appear but is
+   never mutated at runtime. All steering content is appended as separate messages.
+3. **Injection via `request.override`:** `wrap_model_call` appends `SystemMessage` objects with
+   `<system>` tags to `request.messages` before the model call proceeds.
+4. **State observability:** Middleware writes diagnostics back to agent state via
+   `ExtendedModelResponse` + `Command(update={...})`, making drift scores, urgency levels, and
+   phase tracking accessible on every `agent.invoke` result.
+5. **Pydantic configuration:** Type-safe, validated configuration with sensible defaults across all
+   three patterns.
 
 ## Further Reading
 
-These examples accompany a blog post on Agent Behavior-Steering Middleware patterns. Each pattern addresses a specific failure mode in LLM agent systems:
+These examples accompany a blog post on Agent Behavior-Steering Middleware patterns. Each pattern
+addresses a specific failure mode in LLM agent systems:
 
-- **Drift:** Silent degradation of tool usage
-- **Urgency:** Mismatched behavior to resource constraints  
-- **Phases:** Unstructured multi-step workflows
+- **Drift:** Silent degradation of tool usage over a conversation
+- **Urgency:** Mismatched agent behavior relative to remaining resource budget
+- **Phases:** Unstructured multi-step workflows that skip or stall in critical phases
 
 ## License
 

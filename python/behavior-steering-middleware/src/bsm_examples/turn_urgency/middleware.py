@@ -1,21 +1,28 @@
 """Core middleware implementation for turn-based urgency.
 
 This module contains the UrgencyCalculator and TurnUrgencyMiddleware classes
-that implement the behavior-steering pattern.
+that implement the behavior-steering pattern using the AgentMiddleware API.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    ExtendedModelResponse,
+    ModelRequest,
+    ModelResponse,
+)
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langgraph.types import Command
 
 if TYPE_CHECKING:
     from bsm_examples.turn_urgency.types import TurnUrgencyConfig
 
-from bsm_examples.turn_urgency.types import UrgencyLevel
+from bsm_examples.turn_urgency.types import UrgencyAgentState, UrgencyLevel
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +114,6 @@ class UrgencyCalculator:
         turns_remaining = max(0, max_turns - turns_used)
         remaining_ratio = turns_remaining / max_turns if max_turns > 0 else 0.0
 
-        # Determine urgency level based on thresholds
         level = self._determine_level(remaining_ratio)
 
         return UrgencyState(
@@ -161,27 +167,43 @@ class UrgencyCalculator:
                 return prompts.terminal
 
 
-class TurnUrgencyMiddleware:
+class TurnUrgencyMiddleware(AgentMiddleware):
     """Middleware that dynamically adjusts agent behavior based on remaining turn budget.
 
-    This middleware intercepts model calls and modifies the system prompt to reflect
-    current urgency level, creating progressive behavior escalation as turns are consumed.
+    Extends AgentMiddleware and intercepts model calls via wrap_model_call to
+    inject urgency-aware guidance into the message stream and surface urgency
+    tracking fields back into the agent state via ExtendedModelResponse.
+
+    Steering content is injected as a SystemMessage with ``<system>`` tags
+    appended to the conversation messages — not by modifying the system prompt.
+    The agent's system prompt should mention that ``<system>`` tagged guidance
+    will appear in the conversation.
 
     Example:
+        >>> from langchain.agents import create_agent
         >>> config = TurnUrgencyConfig(max_turns=5)
         >>> middleware = TurnUrgencyMiddleware(config)
-        >>>
-        >>> # Use with LangGraph
-        >>> from langgraph.graph import StateGraph
-        >>> builder = StateGraph(TurnUrgencyState)
-        >>> # ... add nodes that use the middleware
+        >>> agent = create_agent(
+        ...     model="gpt-4.1-mini",
+        ...     tools=[...],
+        ...     middleware=[middleware],
+        ...     state_schema=UrgencyAgentState,
+        ...     system_prompt=(
+        ...         "You are a helpful assistant. "
+        ...         "You will receive <system> tags with behavioral guidance "
+        ...         "— follow them."
+        ...     ),
+        ... )
 
     The middleware automatically:
-    1. Counts turns from message history
-    2. Calculates current urgency level
-    3. Injects urgency-appropriate instructions into system prompt
+    1. Counts turns from the model request's message history
+    2. Calculates the current urgency level
+    3. Appends a ``<system>``-tagged message with urgency guidance
     4. Logs urgency transitions for observability
+    5. Returns updated urgency fields in the agent state
     """
+
+    state_schema = UrgencyAgentState
 
     def __init__(self, config: TurnUrgencyConfig | None = None) -> None:
         """Initialize middleware with configuration.
@@ -189,86 +211,99 @@ class TurnUrgencyMiddleware:
         Args:
             config: TurnUrgencyConfig instance. Uses defaults if None.
         """
+        super().__init__()
+
         from bsm_examples.turn_urgency.types import TurnUrgencyConfig
 
         self._config = config or TurnUrgencyConfig()
         self._calculator = UrgencyCalculator(self._config)
         self._last_urgency: UrgencyState | None = None
 
-    def process_messages(
+    def wrap_model_call(
         self,
-        messages: list[BaseMessage],
-    ) -> tuple[list[BaseMessage], UrgencyState]:
-        """Process messages and inject urgency-aware system prompt.
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse | ExtendedModelResponse:
+        """Intercept model calls to inject urgency guidance and record state.
 
-        This is the main entry point for using the middleware without
-        the full LangGraph integration.
+        Calculates the current urgency level from the conversation history,
+        appends an urgency modifier to the system prompt, calls the underlying
+        model handler, and returns an ExtendedModelResponse that writes urgency
+        tracking fields back into the agent state.
 
         Args:
-            messages: Current conversation messages.
+            request: Incoming model request with messages and system prompt.
+            handler: Callable that executes the actual model call.
 
         Returns:
-            Tuple of (modified messages, urgency state).
+            ExtendedModelResponse containing the model response and a Command
+            that updates urgency-related fields in the agent state.
         """
-        # Calculate current urgency from message history
-        urgency = self._calculator.calculate_from_messages(messages)
+        urgency = self._calculator.calculate_from_messages(list(request.messages))
+        self._log_transition(urgency)
 
-        # Log urgency transitions
-        if self._last_urgency is None or self._last_urgency.current_level != urgency.current_level:
+        modified_request = self._build_modified_request(request, urgency)
+        response = handler(modified_request)
+
+        return ExtendedModelResponse(
+            model_response=response,
+            command=Command(
+                update={
+                    "urgency_level": urgency.current_level.name,
+                    "turns_used": urgency.turns_used,
+                    "turns_remaining": urgency.turns_remaining,
+                    "is_terminal": urgency.is_terminal,
+                }
+            ),
+        )
+
+    def _log_transition(self, urgency: UrgencyState) -> None:
+        """Log urgency level transitions for observability.
+
+        Args:
+            urgency: Freshly calculated urgency state.
+        """
+        previous_level = self._last_urgency.current_level if self._last_urgency else None
+
+        if previous_level != urgency.current_level:
             logger.info(
                 "Urgency transition: %s -> %s (turns: %d/%d, remaining: %d)",
-                self._last_urgency.current_level.name if self._last_urgency else "START",
+                previous_level.name if previous_level else "START",
                 urgency.current_level.name,
                 urgency.turns_used,
                 urgency.max_turns,
                 urgency.turns_remaining,
             )
-            self._last_urgency = urgency
 
-        # Modify messages with urgency-aware system prompt
-        modified_messages = self._inject_urgency_prompt(messages, urgency)
+        self._last_urgency = urgency
 
-        return modified_messages, urgency
-
-    def _inject_urgency_prompt(
+    def _build_modified_request(
         self,
-        messages: list[BaseMessage],
+        request: ModelRequest,
         urgency: UrgencyState,
-    ) -> list[BaseMessage]:
-        """Inject urgency modifier into system prompt.
+    ) -> ModelRequest:
+        """Build a modified ModelRequest with urgency guidance appended to messages.
 
-        Strategy: Find existing system message and append urgency modifier,
-        or create new system message if none exists.
+        Injects a ``<system>``-tagged SystemMessage into the message list rather
+        than modifying the system prompt. This keeps the system prompt static and
+        allows steering content to flow naturally in the conversation.
 
         Args:
-            messages: Original message list.
+            request: Original model request.
             urgency: Current urgency state.
 
         Returns:
-            Modified message list with urgency prompt injected.
+            A new ModelRequest with an urgency guidance message appended.
         """
-        urgency_modifier = self._calculator.get_prompt_modifier(urgency)
-        modified_messages: list[BaseMessage] = []
-        system_modified = False
-
-        for msg in messages:
-            if isinstance(msg, SystemMessage):
-                # Append urgency modifier to existing system prompt
-                modified_content = (
-                    f"{msg.content}\n\n"
-                    f"[URGENCY: {urgency.current_level.name}] {urgency_modifier}"
-                )
-                modified_messages.append(SystemMessage(content=modified_content))
-                system_modified = True
-            else:
-                modified_messages.append(msg)
-
-        if not system_modified:
-            # Prepend urgency system message
-            urgency_content = f"[URGENCY: {urgency.current_level.name}] {urgency_modifier}"
-            modified_messages.insert(0, SystemMessage(content=urgency_content))
-
-        return modified_messages
+        modifier = self._calculator.get_prompt_modifier(urgency)
+        guidance = (
+            f"<system>URGENCY: {urgency.current_level.name} "
+            f"(turn {urgency.turns_used}/{urgency.max_turns})\n"
+            f"{modifier}</system>"
+        )
+        steering_msg = SystemMessage(content=guidance)
+        modified_messages = list(request.messages) + [steering_msg]
+        return request.override(messages=modified_messages)
 
     @property
     def current_urgency(self) -> UrgencyState | None:

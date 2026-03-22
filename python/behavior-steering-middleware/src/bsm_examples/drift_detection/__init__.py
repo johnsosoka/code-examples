@@ -13,12 +13,12 @@ from bsm_examples.drift_detection.middleware import (
     DriftSteeringMiddleware,
     ToolUsagePattern,
 )
-from bsm_examples.drift_detection.state import DriftSteeringState
+from bsm_examples.drift_detection.state import DriftAgentState
 
 __all__ = [
     "ToolUsagePattern",
     "DriftDetectionConfig",
     "DriftDetector",
     "DriftSteeringMiddleware",
-    "DriftSteeringState",
+    "DriftAgentState",
 ]

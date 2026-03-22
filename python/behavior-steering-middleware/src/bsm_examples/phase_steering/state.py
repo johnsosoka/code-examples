@@ -15,10 +15,10 @@ if TYPE_CHECKING:
 
 
 class PhaseState(BaseModel):
-    """State object for tracking phase-based workflow progress.
+    """Internal state for tracking phase-based workflow progress.
 
-    This state type is designed to work with LangGraph's StateGraph
-    and provides phase tracking alongside domain-specific data fields.
+    Used by PhaseSteeringMiddleware for rich phase bookkeeping. Not a
+    LangGraph state schema — use PhaseAgentState for agent state integration.
 
     Attributes:
         current_phase: Currently active phase (None = auto-detect).
@@ -178,7 +178,30 @@ class PhaseState(BaseModel):
         return sum(self.phase_iterations.values())
 
 
-# Rebuild the model after Phase is available
-from .phase import Phase
+# Rebuild the model after Phase is available — deferred to break circular import
+from .phase import Phase  # noqa: E402
 
 PhaseState.model_rebuild()
+
+
+# PhaseAgentState imports deferred so PhaseState.model_rebuild() runs first
+from langchain.agents.middleware import AgentState  # noqa: E402
+from typing_extensions import NotRequired  # noqa: E402
+
+
+class PhaseAgentState(AgentState):
+    """Agent state schema with phase tracking fields pushed by middleware.
+
+    This TypedDict extends AgentState for use with LangGraph's create_agent.
+    The middleware writes these fields via ExtendedModelResponse Command updates
+    so callers can observe phase progression in the agent state.
+
+    Note:
+        PhaseState (above) is a richer Pydantic model used for internal
+        middleware bookkeeping. PhaseAgentState is the lightweight TypedDict
+        that surfaces key phase info into the public agent state.
+    """
+
+    current_phase: NotRequired[str]
+    phase_iteration: NotRequired[int]
+    total_iterations: NotRequired[int]

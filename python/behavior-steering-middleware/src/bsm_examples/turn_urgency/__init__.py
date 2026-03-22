@@ -19,6 +19,7 @@ from bsm_examples.turn_urgency.middleware import (
 )
 from bsm_examples.turn_urgency.types import (
     TurnUrgencyConfig,
+    UrgencyAgentState,
     UrgencyLevel,
     UrgencyPrompts,
     UrgencyThresholds,
@@ -27,6 +28,7 @@ from bsm_examples.turn_urgency.types import (
 __all__ = [
     "TurnUrgencyConfig",
     "TurnUrgencyMiddleware",
+    "UrgencyAgentState",
     "UrgencyCalculator",
     "UrgencyLevel",
     "UrgencyPrompts",

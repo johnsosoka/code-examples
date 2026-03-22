@@ -163,14 +163,18 @@ class TestDriftDetector:
             intervention_threshold=0.6,
         )
 
-    def test_initial_state(self, pattern: ToolUsagePattern, config: DriftDetectionConfig) -> None:
+    def test_initial_state(
+        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    ) -> None:
         """Test that detector starts with zero drift."""
         detector = DriftDetector(pattern, config)
         assert detector.calculate_drift_score() == 0.0
         assert detector.turn_count == 0
         assert detector.intervention_count == 0
 
-    def test_record_tool_usage(self, pattern: ToolUsagePattern, config: DriftDetectionConfig) -> None:
+    def test_record_tool_usage(
+        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    ) -> None:
         """Test recording tool usage from messages."""
         detector = DriftDetector(pattern, config)
 
@@ -184,7 +188,9 @@ class TestDriftDetector:
         assert detector.turn_count == 1
         assert len(detector.history) == 1
 
-    def test_drift_score_with_no_tools(self, pattern: ToolUsagePattern, config: DriftDetectionConfig) -> None:
+    def test_drift_score_with_no_tools(
+        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    ) -> None:
         """Test drift score when no tools are used."""
         detector = DriftDetector(pattern, config)
 
@@ -197,7 +203,9 @@ class TestDriftDetector:
         drift = detector.calculate_drift_score()
         assert drift > 0.5  # Should be significant drift
 
-    def test_drift_score_with_correct_usage(self, pattern: ToolUsagePattern, config: DriftDetectionConfig) -> None:
+    def test_drift_score_with_correct_usage(
+        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    ) -> None:
         """Test drift score with correct tool usage."""
         # Create a pattern that only expects tool_a
         single_tool_pattern = ToolUsagePattern(
@@ -219,7 +227,9 @@ class TestDriftDetector:
         drift = detector.calculate_drift_score()
         assert drift < 0.3  # Should be minimal drift
 
-    def test_forbidden_tool_detection(self, pattern: ToolUsagePattern, config: DriftDetectionConfig) -> None:
+    def test_forbidden_tool_detection(
+        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    ) -> None:
         """Test that forbidden tools trigger max drift."""
         pattern_with_forbidden = ToolUsagePattern(
             name="test",
@@ -238,7 +248,9 @@ class TestDriftDetector:
         # Should have maximum drift
         assert detector.calculate_drift_score() == 1.0
 
-    def test_required_tool_penalty(self, pattern: ToolUsagePattern, config: DriftDetectionConfig) -> None:
+    def test_required_tool_penalty(
+        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    ) -> None:
         """Test penalty for missing required tools."""
         detector = DriftDetector(pattern, config)
 
@@ -246,7 +258,7 @@ class TestDriftDetector:
         for i in range(5):
             ai_msg = AIMessage(
                 content="",
-                tool_calls=[{"name": "tool_b", "args": {}, "id": f"call_{i}"}],  # Not the required tool
+                tool_calls=[{"name": "tool_b", "args": {}, "id": f"call_{i}"}],  # Not required
             )
             detector.record_turn([ai_msg])
 
@@ -254,7 +266,9 @@ class TestDriftDetector:
         drift = detector.calculate_drift_score()
         assert drift > 0.0
 
-    def test_intervention_threshold(self, pattern: ToolUsagePattern, config: DriftDetectionConfig) -> None:
+    def test_intervention_threshold(
+        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    ) -> None:
         """Test intervention decision logic."""
         detector = DriftDetector(pattern, config)
 
@@ -271,7 +285,9 @@ class TestDriftDetector:
         if detector.calculate_drift_score() >= config.intervention_threshold:
             assert detector.should_intervene()
 
-    def test_intervention_cooldown(self, pattern: ToolUsagePattern, config: DriftDetectionConfig) -> None:
+    def test_intervention_cooldown(
+        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    ) -> None:
         """Test that cooldown prevents rapid interventions."""
         detector = DriftDetector(pattern, config)
         detector.intervention_count = 1
@@ -280,7 +296,9 @@ class TestDriftDetector:
         # Should not intervene during cooldown
         assert not detector.should_intervene()
 
-    def test_max_interventions(self, pattern: ToolUsagePattern, config: DriftDetectionConfig) -> None:
+    def test_max_interventions(
+        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    ) -> None:
         """Test that max interventions limit is respected."""
         detector = DriftDetector(pattern, config)
         detector.intervention_count = config.max_interventions_per_conversation
@@ -288,7 +306,9 @@ class TestDriftDetector:
         # Should not intervene after max reached
         assert not detector.should_intervene()
 
-    def test_record_intervention(self, pattern: ToolUsagePattern, config: DriftDetectionConfig) -> None:
+    def test_record_intervention(
+        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    ) -> None:
         """Test recording an intervention."""
         detector = DriftDetector(pattern, config)
 
@@ -296,7 +316,9 @@ class TestDriftDetector:
         assert detector.intervention_count == 1
         assert detector.turns_since_last_intervention == 0
 
-    def test_drift_report(self, pattern: ToolUsagePattern, config: DriftDetectionConfig) -> None:
+    def test_drift_report(
+        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    ) -> None:
         """Test drift report generation."""
         detector = DriftDetector(pattern, config)
 
@@ -314,7 +336,9 @@ class TestDriftDetector:
         assert "intervention_count" in report
         assert "tool_comparison" in report
 
-    def test_weighted_frequencies(self, pattern: ToolUsagePattern, config: DriftDetectionConfig) -> None:
+    def test_weighted_frequencies(
+        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    ) -> None:
         """Test weighted frequency calculation."""
         detector = DriftDetector(pattern, config)
 
@@ -355,7 +379,9 @@ class TestDriftSteeringMiddleware:
             intervention_threshold=0.6,
         )
 
-    def test_construction(self, pattern: ToolUsagePattern, config: DriftDetectionConfig) -> None:
+    def test_construction(
+        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    ) -> None:
         """Test middleware construction."""
         middleware = DriftSteeringMiddleware(pattern, config)
         assert middleware.pattern == pattern
@@ -368,7 +394,9 @@ class TestDriftSteeringMiddleware:
         assert middleware.config is not None
         assert isinstance(middleware.config, DriftDetectionConfig)
 
-    def test_generate_reminder(self, pattern: ToolUsagePattern, config: DriftDetectionConfig) -> None:
+    def test_generate_reminder(
+        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    ) -> None:
         """Test reminder generation."""
         middleware = DriftSteeringMiddleware(pattern, config)
 
@@ -381,7 +409,9 @@ class TestDriftSteeringMiddleware:
         assert "SYSTEM REMINDER" in reminder
         assert "tool_a" in reminder
 
-    def test_reset(self, pattern: ToolUsagePattern, config: DriftDetectionConfig) -> None:
+    def test_reset(
+        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    ) -> None:
         """Test middleware reset."""
         middleware = DriftSteeringMiddleware(pattern, config)
 
@@ -401,7 +431,9 @@ class TestDriftSteeringMiddleware:
         assert middleware.detector.intervention_count == 0
         assert len(middleware.detector.history) == 0
 
-    def test_get_drift_report(self, pattern: ToolUsagePattern, config: DriftDetectionConfig) -> None:
+    def test_get_drift_report(
+        self, pattern: ToolUsagePattern, config: DriftDetectionConfig
+    ) -> None:
         """Test getting drift report from middleware."""
         middleware = DriftSteeringMiddleware(pattern, config)
 

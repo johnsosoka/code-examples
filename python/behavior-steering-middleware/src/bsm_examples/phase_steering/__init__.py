@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from .detector import DefaultPhaseDetector, PhaseDetector
     from .middleware import PhaseSteeringMiddleware
     from .phase import Phase
-    from .state import PhaseState
+    from .state import PhaseAgentState, PhaseState
 
 # Deferred imports to avoid circular dependencies
 def __getattr__(name: str) -> type:
@@ -37,6 +37,10 @@ def __getattr__(name: str) -> type:
         from .state import PhaseState
 
         return PhaseState
+    elif name == "PhaseAgentState":
+        from .state import PhaseAgentState
+
+        return PhaseAgentState
     elif name == "PhaseDetector":
         from .detector import PhaseDetector
 
@@ -54,6 +58,7 @@ def __getattr__(name: str) -> type:
 
 __all__ = [
     "Phase",
+    "PhaseAgentState",
     "PhaseBehavior",
     "PhaseConfig",
     "PhaseDetector",

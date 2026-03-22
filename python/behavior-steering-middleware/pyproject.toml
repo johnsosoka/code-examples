@@ -8,7 +8,7 @@ packages = [{include = "bsm_examples", from = "src"}]
 [tool.poetry.dependencies]
 python = "^3.11"
 langchain = "^1.0"
-langchain-openai = "^0.3"
+langchain-openai = "^0.3.30"
 langgraph = "^1.0"
 pydantic = "^2.0"
 python-dotenv = "^1.2.1"

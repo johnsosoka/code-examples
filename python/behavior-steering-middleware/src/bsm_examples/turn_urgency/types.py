@@ -7,9 +7,10 @@ controlling urgency-based behavior steering.
 from __future__ import annotations
 
 from enum import Enum, auto
-from typing import Any, TypedDict
 
+from langchain.agents.middleware import AgentState
 from pydantic import BaseModel, Field, model_validator
+from typing_extensions import NotRequired
 
 
 class UrgencyLevel(Enum):
@@ -171,19 +172,15 @@ class TurnUrgencyConfig(BaseModel):
         return self
 
 
-# LangGraph state schema for turn urgency tracking
-class TurnUrgencyState(TypedDict, total=False):
-    """LangGraph state schema with turn urgency tracking.
+class UrgencyAgentState(AgentState):
+    """Agent state schema with urgency tracking fields.
 
-    This state type can be used with StateGraph to maintain
-    urgency awareness across graph nodes.
+    Extends AgentState for use with create_agent and AgentMiddleware.
+    All urgency fields are optional (NotRequired) since they are populated
+    progressively as the middleware processes model calls.
     """
 
-    # Standard messages field with LangGraph's add_messages reducer
-    messages: list[Any]
-
-    # Urgency tracking (automatically calculated by middleware)
-    urgency: Any  # UrgencyState from middleware module
-
-    # Optional: custom data for specific use cases
-    metadata: dict[str, Any]
+    urgency_level: NotRequired[str]
+    turns_used: NotRequired[int]
+    turns_remaining: NotRequired[int]
+    is_terminal: NotRequired[bool]
