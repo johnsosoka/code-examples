@@ -45,6 +45,7 @@ LangChain's `AgentMiddleware` gives you hooks at key points in the agent loop:
 - **`wrap_tool_call`** — intercepts every tool execution. You can block, modify, or observe tool calls before and after
   they run.
 - **`before_model` / `after_model`** — lighter hooks for logging or state inspection without wrapping the call.
+- **`before_agent` / `after_agent`** — fire once per `invoke` call, useful for per-invocation setup and teardown.
 
 The key mechanism for behavior steering is `request.override(messages=...)`. Instead of mutating the system prompt (which
 should remain static) or appending new messages (which could produce an invalid API call structure), we modify an
@@ -230,34 +231,41 @@ PhaseConfig(
 
 This middleware uses *two* hooks. `wrap_model_call` handles guidance injection — before each LLM call, it prepends a
 `<framework_instruction>` block to the last user message describing the current phase, its objectives, and which tools
-are available. `wrap_tool_call` handles two responsibilities: enforcing tool allow-lists and detecting phase transitions.
+are available. `wrap_tool_call` handles three responsibilities: gating tools after a transition, enforcing per-phase
+allow-lists, and detecting transitions when trigger tools fire.
 
-The enforcement is straightforward — if the agent tries to call `filter_products` during the DISCOVERY phase, it
-gets a `ToolMessage` error explaining that the tool isn't available yet. The agent sees the error, adjusts, and
-uses an allowed tool instead.
-
-The transition detection happens *after* the tool executes:
+The flow through `wrap_tool_call` is a sequence of three gates:
 
 ```python
 def wrap_tool_call(self, request, handler):
-    # 1. Enforce allow-list
+    # Gate 1: If a transition just fired, block ALL tools
+    #         until the next invoke (user turn)
+    if self._transition_pending:
+        return ToolMessage(content="Phase transition occurred. "
+            "Report to user before continuing.")
+
+    # Gate 2: Enforce allow-list for current phase
     if tool_name not in allowed_tools:
-        return ToolMessage(content="Tool not available in this phase...")
+        return ToolMessage(content="Tool not available in this phase.")
 
-    # 2. Execute the tool
+    # Gate 3: Execute tool, then check for transition
     result = handler(request)
-
-    # 3. Check for phase transition
     next_phase = self.detector.check_tool_transition(
         self._current_phase, tool_name
     )
     if next_phase is not None:
         self._current_phase = next_phase
-
+        self._transition_pending = True  # lock until next invoke
     return result
 ```
 
-The detector is trivially simple — a config lookup, not a heuristic engine:
+Gate 1 is the key to making this work with ReAct agents. Without it, the agent would call `note_preferences`
+(triggering DISCOVERY → CURATION), then immediately chain into `filter_products` and `shortlist_items` within
+the same invoke — blowing through every phase in one turn. The `_transition_pending` flag forces the agent to
+stop, report back to the user, and only unlock the next phase's tools on the following `invoke` call (cleared
+by the `before_agent` hook).
+
+The detector itself is trivially simple — a config lookup, not a heuristic engine:
 
 ```python
 class ToolTriggeredDetector:
@@ -266,13 +274,10 @@ class ToolTriggeredDetector:
         return rule.to_phase if rule else None
 ```
 
-This means the next `wrap_model_call` automatically injects CURATION guidance because `_current_phase` has already
-been updated. The agent seamlessly transitions from "ask questions about what you're looking for" to "filter and
-compare these products based on what the customer said."
-
 Phase steering transforms a flat ReAct loop into a structured workflow without building a custom state graph. The
 agent still has full autonomy within each phase — it decides what to say, which tools to call, and how to respond —
-but the middleware constrains *which* tools are available and *what* behavioral guidance it receives at each stage.
+but the middleware constrains *which* tools are available, *when* transitions happen, and *what* behavioral
+guidance the agent receives at each stage.
 
 ## Conclusion
 
