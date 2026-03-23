@@ -1,0 +1,38 @@
+[tool.poetry]
+name = "behavior-steering-middleware"
+version = "0.1.0"
+description = "LangGraph middleware examples for behavior steering patterns"
+authors = ["John Sosoka"]
+packages = [{include = "bsm_examples", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+langchain = "^1.0"
+langchain-openai = "^0.3.30"
+langgraph = "^1.0"
+pydantic = "^2.0"
+python-dotenv = "^1.2.1"
+langgraph-prebuilt = "^1.0.8"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+mypy = "^1.8"
+ruff = "^0.8"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
